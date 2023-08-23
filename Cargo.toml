@@ -3,6 +3,13 @@ name = "monfari"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+color-eyre = "0.6.2"
+eyre = "0.6.8"
+proqnt = "0.1.0"
+serde = { version = "1.0.185", features = ["derive"] }
+toml = "0.7.6"
+tracing = "0.1.37"
+tracing-error = "0.2.0"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+ulid = "1.0.0"

@@ -23,7 +23,7 @@
     rust-overlay,
     treefmt-nix,
     crane,
-    systems
+    systems,
   }: let
     inherit (nixpkgs) lib;
     eachSystem = f:
@@ -65,6 +65,10 @@
       cargoArtifacts,
     }: {
       monfari = craneLib.buildPackage {
+        preFixup = ''
+          wrapProgram $out/bin/monfari --prefix PATH : ${lib.makeBinPath (with pkgs; [git nix])}
+        '';
+        nativeBuildInputs = [pkgs.makeBinaryWrapper];
         inherit src cargoArtifacts;
       };
       default = ownPkgs.monfari;
@@ -76,7 +80,7 @@
     }: {
       default = pkgs.mkShell {
         inputsFrom = [ownPkgs.default];
-        packages = [toolchain pkgs.bacon];
+        packages = [toolchain pkgs.bacon pkgs.sqlx-cli pkgs.sqlite pkgs.cargo-expand];
       };
     });
     formatter = eachSystem ({treefmt}: treefmt.wrapper);
@@ -92,6 +96,13 @@
       clippy = craneLib.cargoClippy {
         inherit src cargoArtifacts;
       };
+    });
+    apps = eachSystem ({ownPkgs}: rec {
+      monfari = {
+        type = "app";
+        program = "${ownPkgs.monfari}/bin/monfari";
+      };
+      default = monfari;
     });
   };
 }
