@@ -2,7 +2,8 @@ use std::{
     collections::BTreeMap,
     fmt::{Debug, Display},
     marker::PhantomData,
-    str::FromStr, ops::{Add, Neg},
+    ops::{Add, Neg, AddAssign},
+    str::FromStr,
 };
 
 use ulid::Ulid;
@@ -117,8 +118,14 @@ impl FromStr for Currency {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let c: [char; 3] = s.chars().collect::<Vec<_>>().try_into().map_err(|_| "Requires exactly 3 upper-case chars")?;
-        if !c.iter().all(|x| x.is_ascii_uppercase()) { return Err("Requires exactly 3 upper-case chars"); }
+        let c: [char; 3] = s
+            .chars()
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "Requires exactly 3 upper-case chars")?;
+        if !c.iter().all(|x| x.is_ascii_uppercase()) {
+            return Err("Requires exactly 3 upper-case chars");
+        }
         Ok(Self(c))
     }
 }
@@ -155,14 +162,20 @@ impl FromStr for Amount {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let e = Err("Amounts of currency are formatted as XXXX.XX CC");
-        let Some((amount, currency)) = s.split_once(' ') else { return e };
-        let Some((whole, cents)) = amount.split_once('.') else { return e };
-        if !(whole.chars().all(|c| c.is_ascii_digit()) && cents.chars().all(|c| c.is_ascii_digit())) {
-            return e
+        let e = "Amounts of currency are formatted as XXXX.XX CC";
+        let (amount, currency) = s.split_once(' ').ok_or(e)?;
+        let (whole, cents) = amount.split_once('.').ok_or(e)?;
+        if !(whole.chars().all(|c| c.is_ascii_digit()) && cents.chars().all(|c| c.is_ascii_digit()))
+        {
+            return Err(e);
         }
-        if cents.chars().count() != 2 { return e }
-        Ok(Self(whole.parse::<i32>().unwrap() * 100 + cents.parse::<i32>().unwrap(), currency.parse()?))
+        if cents.chars().count() != 2 {
+            return Err(e);
+        }
+        Ok(Self(
+            whole.parse::<i32>().unwrap() * 100 + cents.parse::<i32>().unwrap(),
+            currency.parse()?,
+        ))
     }
 }
 
@@ -204,12 +217,11 @@ impl Add<i32> for Amount {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Amounts(pub BTreeMap<Currency, Amount>);
 
-impl Amounts {
-    pub fn add(&mut self, amount: Amount) -> Amount {
+impl AddAssign<Amount> for Amounts {
+    fn add_assign(&mut self, amount: Amount) {
         let present = self.0.entry(amount.1).or_insert(Amount(0, amount.1));
         assert!(present.1 == amount.1);
         present.0 += amount.0;
-        *present
     }
 }
 
@@ -280,6 +292,17 @@ impl Account<Virtual> {
     }
 }
 
+impl From<Id<Account<Physical>>> for Id<Account> {
+    fn from(x: Id<Account<Physical>>) -> Id<Account> {
+        x.erase().unerase()
+    }
+}
+impl From<Id<Account<Virtual>>> for Id<Account> {
+    fn from(x: Id<Account<Virtual>>) -> Id<Account> {
+        x.erase().unerase()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transaction {
     pub id: Id<Self>,
@@ -317,4 +340,39 @@ pub enum TransactionInner {
         acc_virt: Id<Account<Virtual>>,
         new_amount: Amount,
     },
+}
+
+impl Transaction {
+    pub fn results(&self) -> Vec<(Id<Account>, Amount)> {
+        use TransactionInner::*;
+        let &Transaction { amount, ref inner, .. } = self;
+        match *inner {
+            Received {
+                src: _,
+                dst,
+                dst_virt,
+            } => {
+                vec![(dst.into(), amount), (dst_virt.into(), amount)]
+            }
+            Paid {
+                src,
+                src_virt,
+                dst: _,
+            } => vec![(src.into(), -amount), (src_virt.into(), -amount)],
+            MovePhys { src, dst, fees } => {
+                vec![(src.into(), -(amount + fees)), (dst.into(), amount)]
+            }
+            MoveVirt { src, dst } => vec![(src.into(), -amount), (dst.into(), amount)],
+            Convert {
+                acc,
+                acc_virt,
+                new_amount,
+            } => vec![
+                (acc.into(), -amount),
+                (acc.into(), new_amount),
+                (acc_virt.into(), -amount),
+                (acc_virt.into(), new_amount),
+            ],
+        }
+    }
 }

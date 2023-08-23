@@ -1,19 +1,25 @@
 use std::{
     fmt::Debug,
     fs,
-    path::{Path, PathBuf},
-    process,
+    io::Write,
+    path::PathBuf,
+    process::{self, Stdio},
 };
 
 use eyre::{ensure, eyre, Result, WrapErr};
-use serde::{Deserialize, Serialize};
+use itertools::Itertools;
+use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, instrument};
 
 use crate::{command::*, types::*};
 
 #[instrument]
 fn cmd(cmd: &mut process::Command) -> Result<()> {
-    let status = cmd.status()?;
+    let status = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
     debug!(?status);
     ensure!(
         status.success(),
@@ -38,8 +44,35 @@ macro_rules! git {
 }
 
 #[derive(Debug)]
+struct LockFile(fs::File, PathBuf);
+
+impl LockFile {
+    fn acquire(path: PathBuf) -> Result<Self> {
+        let mut f = fs::File::options()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .wrap_err("Repo is locked by another process")?;
+        write!(f, "{}", std::process::id())?;
+        Ok(Self(f, path))
+    }
+    fn release(self) {}
+}
+
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        assert_eq!(
+            fs::read_to_string(&self.1).unwrap(),
+            std::process::id().to_string()
+        );
+        fs::remove_file(&self.1).unwrap();
+    }
+}
+
+#[derive(Debug)]
 pub struct Repository {
     path: PathBuf,
+    lock: LockFile,
 }
 
 impl Repository {
@@ -55,15 +88,6 @@ impl Repository {
             }
         "#;
         const FLAKE_URL: &str = "/home/ben/code/monfari";
-        /* Structure:
-            - flake.nix
-            - accounts
-              - {ID}.toml
-            - transactions
-              - {ID}.toml
-
-            where ID is formatted as proquints
-        */
         if path.try_exists()? {
             ensure!(
                 path.read_dir()?.next().is_none(),
@@ -73,6 +97,8 @@ impl Repository {
             fs::create_dir_all(&path)?;
         }
         fs::write(path.join("flake.nix"), FLAKE_NIX_TMPL)?;
+        fs::write(path.join(".gitignore"), "monfari-repo-lock\n")?;
+
         for dir in ["transactions", "accounts"] {
             let p = path.join(dir);
             fs::create_dir_all(&p)?;
@@ -80,7 +106,7 @@ impl Repository {
         }
 
         git!(in &path, "init")?;
-        git!(in &path, "add", "transactions", "accounts", "flake.nix")?;
+        git!(in &path, "add", "transactions", "accounts", ".gitignore", "flake.nix")?;
         cmd!(
             "nix",
             "flake",
@@ -92,7 +118,8 @@ impl Repository {
         )?;
         git!(in &path, "add", "flake.lock")?;
 
-        let mut this = Self { path };
+        let lock = LockFile::acquire(path.join("monfari-repo-lock"))?;
+        let mut this = Self { path, lock };
         this.create_account(Account {
             id: Id::generate(),
             name: "Default Virtual Account".to_owned(),
@@ -114,105 +141,90 @@ impl Repository {
 
     #[instrument]
     pub fn open(path: PathBuf) -> Result<Self> {
-        git!(in &path, "status").wrap_err("git isn't initialized")?;
+        git!(in &path, "status").wrap_err("Not initialized")?;
+        git!(in &path, "diff-index", "--quiet", "HEAD")
+            .wrap_err("repo is dirty - monfari has crashed previously")?;
         ensure!(path.join("accounts").is_dir(), "Not initialized");
         ensure!(path.join("transactions").is_dir(), "Not initialized");
         ensure!(path.join("flake.nix").is_file(), "Not initialized");
-        Ok(Self { path })
+        let lock = LockFile::acquire(path.join("monfari-repo-lock"))?;
+        Ok(Self { path, lock })
+    }
+}
+
+pub trait Entity: DeserializeOwned + Serialize + Debug {
+    const PATH: &'static str;
+    fn id(&self) -> Id<Self>;
+}
+impl Entity for Account {
+    const PATH: &'static str = "accounts";
+    fn id(&self) -> Id<Self> {
+        self.id
+    }
+}
+impl Entity for Transaction {
+    const PATH: &'static str = "transactions";
+    fn id(&self) -> Id<Self> {
+        self.id
     }
 }
 
 impl Repository {
-    fn path_for<T>(&self, location: &'static str, id: Id<T>) -> PathBuf {
-        self.path.join(format!("{location}/{id}.toml"))
+    fn path_for<T: Entity>(&self, id: Id<T>) -> PathBuf {
+        self.path.join(format!("{}/{id}.toml", T::PATH))
     }
 
     #[instrument(ret)]
-    fn get<T: for<'a> Deserialize<'a> + Debug>(&self, path: &Path) -> Result<T> {
-        Ok(toml::from_str(&fs::read_to_string(path)?)?)
+    pub fn get<T: Entity>(&self, id: Id<T>) -> Result<T> {
+        Ok(toml::from_str(&fs::read_to_string(self.path_for(id))?)?)
     }
 
     #[instrument]
-    fn set<T: Serialize + Debug>(&mut self, path: &Path, value: &T) -> Result<()> {
-        fs::write(path, toml::to_string_pretty(&value)?)?;
+    fn set<T: Entity>(&mut self, value: &T) -> Result<()> {
+        let path = self.path_for(value.id());
+        fs::write(&path, toml::to_string_pretty(&value)?)?;
+        git!(in &self.path, "add", &path)?;
         Ok(())
     }
 
     #[instrument(skip(f))]
-    fn modify<T: Serialize + for<'a> Deserialize<'a> + Debug>(
-        &mut self,
-        path: &Path,
-        f: impl FnOnce(&mut T) -> Result<()>,
-    ) -> Result<T> {
-        let mut value = self.get(path)?;
+    fn modify<T: Entity>(&mut self, id: Id<T>, f: impl FnOnce(&mut T) -> Result<()>) -> Result<T> {
+        let mut value = self.get(id)?;
         f(&mut value)?;
-        self.set(path, &value)?;
+        assert!(value.id() == id);
+        self.set(&value)?;
         Ok(value)
     }
 }
 
 impl Repository {
-    fn add_to_account<T>(&mut self, acc: Id<Account<T>>, amount: Amount) -> Result<()> {
-        let acc: Id<Account> = acc.erase().unerase();
-        self.modify(&self.path_for("accounts", acc), |account: &mut Account| {
-            debug!(?account, ?amount);
-            ensure!(account.current.add(amount).0 >= 0, "Account balance not permitted to be below 0 in any currency");
-            Ok(())
-        })?;
-        Ok(())
-    }
-    // Only exists to make it more obvious than a single character that transactions are removing, not adding, their amounts to the accounts
-    fn draw_from_account<T>(&mut self, acc: Id<Account<T>>, amount: Amount) -> Result<()> {
-        self.add_to_account(acc, -amount)
-    }
-
+    #[instrument]
     fn add_transaction(&mut self, transaction: Transaction) -> Result<()> {
-        self.set(&self.path_for("transactions", transaction.id), &transaction)?;
-        let Transaction { id, amount, .. } = transaction;
-        match transaction.inner {
-            TransactionInner::Received { src: _, dst, dst_virt } => {
-                self.add_to_account(dst, amount)?;
-                self.add_to_account(dst_virt, amount)?;
-            },
-            TransactionInner::Paid { src, src_virt, dst: _ } => {
-                self.draw_from_account(src, amount)?;
-                self.draw_from_account(src_virt, amount)?;
-            },
-            TransactionInner::MovePhys { src, dst, fees } => {
-                // MovePhys amount is the amount received: fees are added to `amount` *before* drawing them
-                self.draw_from_account(src, amount + fees)?;
-                self.add_to_account(dst, amount)?;
-            },
-            TransactionInner::MoveVirt { src, dst } => {
-                self.draw_from_account(src, amount)?;
-                self.add_to_account(dst, amount)?;
-            },
-            TransactionInner::Convert {
-                acc,
-                acc_virt,
-                new_amount,
-            } => {
-                self.draw_from_account(acc, amount)?;
-                self.draw_from_account(acc_virt, amount)?;
-                // TODO: don't rewrite both files twice?
-                self.add_to_account(acc, new_amount)?;
-                self.add_to_account(acc_virt, new_amount)?;
-            },
-        };
-        git!(in &self.path, "add", format!("transactions/{}.toml", id))?;
+        self.set(&transaction)?;
+        for (acc, amounts) in &transaction.results().into_iter().group_by(|x| x.0) {
+            self.modify(acc, |acc| {
+                for amount in amounts {
+                    acc.current += amount.1;
+                }
+                ensure!(
+                    acc.current.0.values().all(|x| x.0 >= 0),
+                    "Account balance must never be below 0 in any currency"
+                );
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
     #[instrument]
     fn create_account(&mut self, account: Account) -> Result<()> {
-        self.set(&self.path_for("accounts", account.id), &account)?;
-        git!(in &self.path, "add", format!("accounts/{}.toml", account.id))?;
+        self.set(&account)?;
         Ok(())
     }
 
     #[instrument]
     fn modify_account(&mut self, id: Id<Account>, changes: Vec<AccountModification>) -> Result<()> {
-        self.modify(&self.path_for("accounts", id), |account: &mut Account| {
+        self.modify(id, |account| {
             for change in changes {
                 match change {
                     AccountModification::Disable => {
@@ -239,43 +251,21 @@ impl Repository {
             Command::UpdateAccount(id, f) => self.modify_account(id, f)?,
             Command::AddTransaction(transaction) => self.add_transaction(transaction)?,
         }
-       
-         git!(in &self.path, "commit", "-a", "-m", message)?;
+
+        git!(in &self.path, "commit", "-m", message)?;
         Ok(())
     }
 }
 
 impl Repository {
     #[instrument]
-    pub fn transactions(&self) -> Result<Vec<Id<Transaction>>> {
-        let mut out = Vec::new();
-        for file in self.path.join("transactions").read_dir()? {
-            let Ok(filename) = file?.file_name().into_string() else { continue };
-            let Some(id) = filename.strip_suffix(".toml") else { continue };
-            out.push(id.parse().map_err(|e| eyre!("{e}"))?);
-        }
-        Ok(out)
-    }
-
-    #[instrument]
-    pub fn get_transaction(&self, id: Id<Transaction>) -> Result<Transaction> {
-        self.get(&self.path_for("transactions", id))
-    }
-
-    #[instrument]
-    pub fn accounts(&self) -> Result<Vec<Account>> {
-        let mut out = Vec::new();
-        for file in self.path.join("accounts").read_dir()? {
-            let Ok(filename) = file?.file_name().into_string() else { continue };
-            let Some(id) = filename.strip_suffix(".toml") else { continue };
-            let id = id.parse().map_err(|e| eyre!("{e}"))?;
-            out.push(self.get_account(id)?);
-        }
-        Ok(out)
-    }
-
-    #[instrument]
-    pub fn get_account(&self, id: Id<Account>) -> Result<Account> {
-        self.get(&self.path_for("accounts", id))
+    pub fn list<T: Entity>(&self) -> Result<Vec<Id<T>>> {
+        self.path
+            .join(T::PATH)
+            .read_dir()?
+            .filter_map_ok(|entry| entry.file_name().into_string().ok())
+            .filter_map_ok(|filename| Some(filename.strip_suffix(".toml")?.to_owned()))
+            .map(|x| x?.parse::<Id<T>>().map_err(|e| eyre!("{e}")))
+            .collect()
     }
 }
