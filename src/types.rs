@@ -6,6 +6,7 @@ use std::{
     str::FromStr,
 };
 
+use clap::ValueEnum;
 use ulid::Ulid;
 
 use serde::{de::Error, Deserialize, Serialize};
@@ -109,6 +110,11 @@ impl<'de, T> Deserialize<'de> for Id<T> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Currency([char; 3]);
+impl Currency {
+    pub const EUR: Self = Self(['E', 'U', 'R']);
+    pub const GBP: Self = Self(['G', 'B', 'P']);
+    pub const USD: Self = Self(['U', 'S', 'D']);
+}
 impl Display for Currency {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}{}{}", self.0[0], self.0[1], self.0[2])
@@ -153,27 +159,29 @@ impl<'de> Deserialize<'de> for Currency {
 // Amount is number of smallest denomination
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Amount(pub i32, pub Currency);
+impl Amount {
+    pub fn parse_num(s: &str) -> Option<i32> {
+        s.parse::<i32>().ok().map(|x| x * 100)
+            .or_else(|| {
+                let (whole, cents) = s.split_once('.')?;
+                if cents.len() != 2 || cents.chars().any(|c| !c.is_ascii_digit()) { return None };
+                Some(whole.parse::<i32>().ok()? * 100 + cents.parse::<i32>().ok()?)
+            })
+    }
+}
 impl Display for Amount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{:02} {}", self.0 / 100, self.0 % 100, self.1)
+        write!(f, "{}{} {}", self.0 / 100, if self.0 % 100 != 0 { format!(".{:02}", self.0 % 100) } else { "".to_owned() }, self.1)
     }
 }
 impl FromStr for Amount {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let e = "Amounts of currency are formatted as XXXX.XX CC";
+        let e = "Amounts of currency are formatted as XXXX.XX CCC";
         let (amount, currency) = s.split_once(' ').ok_or(e)?;
-        let (whole, cents) = amount.split_once('.').ok_or(e)?;
-        if !(whole.chars().all(|c| c.is_ascii_digit()) && cents.chars().all(|c| c.is_ascii_digit()))
-        {
-            return Err(e);
-        }
-        if cents.chars().count() != 2 {
-            return Err(e);
-        }
         Ok(Self(
-            whole.parse::<i32>().unwrap() * 100 + cents.parse::<i32>().unwrap(),
+            Self::parse_num(amount).ok_or(e)?,
             currency.parse()?,
         ))
     }
@@ -225,15 +233,43 @@ impl AddAssign<Amount> for Amounts {
     }
 }
 
+impl Display for Amounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for amount in self.0.values() {
+            write!(f, "{}, ", amount)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Physical;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Virtual;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum AccountType {
     Physical,
     Virtual,
+}
+
+impl FromStr for AccountType {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "physical" => Ok(Self::Physical),
+            "virtual" => Ok(Self::Virtual),
+            _ => Err("No such account type")
+        }
+    }
+}
+impl Display for AccountType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            AccountType::Physical => "physical",
+            AccountType::Virtual => "virtual",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

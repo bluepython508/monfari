@@ -1,13 +1,29 @@
 #![allow(dead_code)]
 
 mod command;
+mod repl;
 mod repository;
 mod types;
 
-use command::Command;
-use types::*;
+use std::path::PathBuf;
 
+use clap::{Parser, Subcommand, ValueHint};
+use repository::Repository;
 use tracing_subscriber::prelude::*;
+
+#[derive(Parser)]
+struct Args {
+    #[arg(short, long, env = "MONFARI_REPO", value_hint = ValueHint::DirPath)]
+    repo: PathBuf,
+    #[command(subcommand)]
+    subcommand: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Clone { url: String },
+    Init,
+}
 
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
@@ -18,39 +34,17 @@ fn main() -> eyre::Result<()> {
             .with(tracing_error::ErrorLayer::default()),
     )?;
 
-    let mut repo = repository::Repository::init(std::env::args().nth(1).unwrap().into())?;
-    let acc_phys_id = Id::generate();
-    let acc_virt_id = Id::generate();
-    let commands = [
-        Command::CreateAccount(Account {
-            id: acc_phys_id,
-            name: "A Clever Account Name".to_owned(),
-            notes: "".to_owned(),
-            typ: AccountType::Physical,
-            current: Default::default(),
-            enabled: true,
-        }),
-        Command::CreateAccount(Account {
-            id: acc_virt_id,
-            name: "A default virtual account".to_owned(),
-            notes: "".to_owned(),
-            typ: AccountType::Virtual,
-            current: Default::default(),
-            enabled: true,
-        }),
-        Command::AddTransaction(Transaction {
-            id: Id::generate(),
-            notes: "".to_owned(),
-            amount: "100.00 EUR".parse().unwrap(),
-            inner: TransactionInner::Received {
-                src: "An Example Source".to_owned(),
-                dst: acc_phys_id.erase().unerase(),
-                dst_virt: acc_virt_id.erase().unerase(),
-            },
-        }),
-    ];
-    for command in commands {
-        repo.run_command(command)?;
+    let Args { repo, subcommand } = Args::parse();
+    match subcommand {
+        None => {
+            repl::repl(Repository::open(repo)?)?;
+        }
+        Some(Command::Init) => {
+            Repository::init(repo)?;
+        }
+        Some(Command::Clone { url }) => {
+            Repository::clone(url, repo)?;
+        }
     }
 
     Ok(())
