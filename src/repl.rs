@@ -362,7 +362,14 @@ impl<'a> Parser<'a> {
 struct ReedlineCmd(Arc<RwLock<Option<Repository>>>);
 impl ReedlineCmd {
     fn parse(&self, line: &str) -> (Vec<Token>, Result<Command, Completions>) {
-        Parser::parse(line, self.0.read().unwrap().as_ref().expect("Tried to parse after taking back repo"))
+        Parser::parse(
+            line,
+            self.0
+                .read()
+                .unwrap()
+                .as_ref()
+                .expect("Tried to parse after taking back repo"),
+        )
     }
 }
 impl Completer for ReedlineCmd {
@@ -452,10 +459,10 @@ pub fn repl(repo: Repository) -> Result<Repository> {
                     eprintln!("{e}");
                 }
             }
-            Signal::CtrlC => {},
+            Signal::CtrlC => {}
             Signal::CtrlD => break,
         }
-    };
+    }
     let mut repo = custom.0.write().unwrap();
     Ok(repo.take().unwrap())
 }

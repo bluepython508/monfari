@@ -5,7 +5,7 @@ mod repl;
 mod repository;
 mod types;
 
-use std::{path::PathBuf, env};
+use std::{env, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use eyre::eyre;
@@ -35,7 +35,9 @@ fn main() -> eyre::Result<()> {
     )?;
 
     let Args { subcommand } = Args::parse();
-    let repo: PathBuf = env::var_os("MONFARI_REPO").ok_or(eyre!("MONFARI_REPO must be set"))?.into();
+    let repo: PathBuf = env::var_os("MONFARI_REPO")
+        .ok_or(eyre!("MONFARI_REPO must be set"))?
+        .into();
     match subcommand {
         Some(Command::Init) => {
             Repository::init(repo)?;
@@ -52,7 +54,8 @@ fn main() -> eyre::Result<()> {
         Some(Command::Run { mut args }) => {
             for arg in &mut args {
                 if arg.contains(' ') {
-                    arg.push('"'); arg.insert(0, '"')
+                    arg.push('"');
+                    arg.insert(0, '"')
                 }
             }
             let mut repo = Repository::open(repo)?;
