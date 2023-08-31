@@ -5,16 +5,15 @@ mod repl;
 mod repository;
 mod types;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, env};
 
-use clap::{Parser, Subcommand, ValueHint};
+use clap::{Parser, Subcommand};
+use eyre::eyre;
 use repository::Repository;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser)]
 struct Args {
-    #[arg(short, long, env = "MONFARI_REPO", value_hint = ValueHint::DirPath)]
-    repo: PathBuf,
     #[command(subcommand)]
     subcommand: Option<Command>,
 }
@@ -23,6 +22,7 @@ struct Args {
 enum Command {
     Clone { url: String },
     Init,
+    Run { args: Vec<String> },
 }
 
 fn main() -> eyre::Result<()> {
@@ -34,7 +34,8 @@ fn main() -> eyre::Result<()> {
             .with(tracing_error::ErrorLayer::default()),
     )?;
 
-    let Args { repo, subcommand } = Args::parse();
+    let Args { subcommand } = Args::parse();
+    let repo: PathBuf = env::var_os("MONFARI_REPO").ok_or(eyre!("MONFARI_REPO must be set"))?.into();
     match subcommand {
         None => {
             repl::repl(Repository::open(repo)?)?;
@@ -44,6 +45,14 @@ fn main() -> eyre::Result<()> {
         }
         Some(Command::Clone { url }) => {
             Repository::clone(url, repo)?;
+        }
+        Some(Command::Run { mut args }) => {
+            for arg in &mut args {
+                if arg.contains(' ') {
+                    arg.push('"'); arg.insert(0, '"')
+                }
+            }
+            repl::command(Repository::open(repo)?, args.join(" "))?;
         }
     }
 

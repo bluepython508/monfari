@@ -1,17 +1,20 @@
 use std::sync::{Arc, RwLock};
 
-use eyre::Result;
+use eyre::{eyre, Result};
 use itertools::Itertools;
 
 use crate::{
-    command::{AccountModification, self},
+    command::{self, AccountModification},
     repository::Repository,
-    types::{Account, AccountType, Amount, Currency, Id, Physical, TransactionInner, Virtual, Transaction},
+    types::{
+        Account, AccountType, Amount, Currency, Id, Physical, Transaction, TransactionInner,
+        Virtual,
+    },
 };
 use reedline::{
     default_emacs_keybindings, ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs,
     Highlighter, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span,
-    StyledText, Suggestion, Validator, ValidationResult,
+    StyledText, Suggestion, ValidationResult, Validator,
 };
 
 use nu_ansi_term::Color;
@@ -171,8 +174,9 @@ impl<'a> Parser<'a> {
     }
 
     fn account_disable(&mut self) -> Result<Command, Completions> {
+        let id = self.account_id(None)?;
         Ok(Command::AccountModify(
-            self.account_id(None)?,
+            id,
             vec![AccountModification::Disable],
         ))
     }
@@ -260,7 +264,9 @@ impl<'a> Parser<'a> {
     }
 
     fn string(&mut self) -> Result<String, Completions> {
-        self.token(None, |_, s| Some((TokenType::String, s.trim_matches('"').to_owned())))
+        self.token(None, |_, s| {
+            Some((TokenType::String, s.trim_matches('"').to_owned()))
+        })
     }
 
     fn account_id(
@@ -274,6 +280,7 @@ impl<'a> Parser<'a> {
                     .into_iter()
                     .flat_map(|x| x.into_iter())
                     .filter_map(|x| self.repo.get(x).ok())
+                    .filter(|x| x.enabled)
                     .filter(|x| account_type.map_or(true, |typ| x.typ == typ))
                     .map(|x| {
                         (
@@ -289,7 +296,7 @@ impl<'a> Parser<'a> {
                     tok.parse().ok().filter(|&s| {
                         this.repo
                             .get::<Account>(s)
-                            .is_ok_and(|acc| account_type.map_or(false, |typ| acc.typ == typ))
+                            .is_ok_and(|acc| account_type.map_or(true, |typ| acc.typ == typ))
                     })?,
                 ))
             },
@@ -414,7 +421,6 @@ impl Validator for ReedlineCmd {
     }
 }
 
-
 pub fn repl(repo: Repository) -> Result<()> {
     let custom = ReedlineCmd(Arc::new(RwLock::new(repo)));
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
@@ -442,13 +448,8 @@ pub fn repl(repo: Repository) -> Result<()> {
     loop {
         match line_editor.read_line(&prompt)? {
             Signal::Success(line) => {
-                let Ok(cmd) = custom.parse(&line).1 else { println!("Invalid command"); continue };
-                let repo = &mut *custom.0.write().unwrap();
-                match cmd {
-                    Command::AccountsList => accounts_list(repo)?,
-                    Command::AccountCreate { typ, name } => account_create(repo, typ, name)?,
-                    Command::AccountModify(id, mods) => account_modify(repo, id, mods)?,
-                    Command::TransactionAdd { amount, inner } => transaction(repo, amount, inner)?,
+                if let Err(e) = run_command(&custom, line) {
+                    eprintln!("{e}");
                 }
             }
             Signal::CtrlD => break Ok(()),
@@ -457,23 +458,55 @@ pub fn repl(repo: Repository) -> Result<()> {
     }
 }
 
+pub fn command(repo: Repository, cmd: String) -> Result<()> {
+    let custom = ReedlineCmd(Arc::new(RwLock::new(repo)));
+    run_command(&custom, cmd)
+}
+
+fn run_command(custom: &ReedlineCmd, cmd: String) -> Result<()> {
+    let cmd = custom
+        .parse(&cmd)
+        .1
+        .map_err(|_| eyre!("Invalid Command: {}", cmd))?;
+    let repo = &mut *custom.0.write().unwrap();
+    match cmd {
+        Command::AccountsList => accounts_list(repo),
+        Command::AccountCreate { typ, name } => account_create(repo, typ, name),
+        Command::AccountModify(id, mods) => account_modify(repo, id, mods),
+        Command::TransactionAdd { amount, inner } => transaction(repo, amount, inner),
+    }
+}
+
 fn transaction(repo: &mut Repository, amount: Amount, inner: TransactionInner) -> Result<()> {
-    let notes = edit::edit("# Notes")?.lines().filter(|x| !x.starts_with('#')).collect();
+    let notes = edit::edit("# Notes")?
+        .lines()
+        .filter(|x| !x.starts_with('#'))
+        .collect();
     let id = Id::generate();
     repo.run_command(command::Command::AddTransaction(Transaction {
-        id, notes, amount, inner
+        id,
+        notes,
+        amount,
+        inner,
     }))?;
     println!("Added transaction {}", id);
     Ok(())
 }
 
-fn account_modify(repo: &mut Repository, id: Id<Account>, mods: Vec<AccountModification>) -> Result<()> {
+fn account_modify(
+    repo: &mut Repository,
+    id: Id<Account>,
+    mods: Vec<AccountModification>,
+) -> Result<()> {
     repo.run_command(command::Command::UpdateAccount(id, mods))?;
     Ok(())
 }
 
 fn account_create(repo: &mut Repository, typ: AccountType, name: String) -> Result<()> {
-    let notes = edit::edit("# Notes")?.lines().filter(|x| !x.starts_with('#')).collect();
+    let notes = edit::edit("# Notes")?
+        .lines()
+        .filter(|x| !x.starts_with('#'))
+        .collect();
     let id = Id::generate();
     repo.run_command(command::Command::CreateAccount(Account {
         id,
@@ -488,9 +521,32 @@ fn account_create(repo: &mut Repository, typ: AccountType, name: String) -> Resu
 }
 
 fn accounts_list(repo: &Repository) -> Result<()> {
+    use comfy_table::*;
+    let mut table = Table::new();
+    table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["ID", "Name", "Type", "Enabled", "Contents"]);
+    table
+        .column_mut(0)
+        .expect("Column 0 exists")
+        .set_delimiter('-');
     for account in repo.list::<Account>()? {
-        let Account { id, name, typ, current, .. }= repo.get(account)?;
-        println!("  {id} (\"{name}\"): {typ} {current}");
+        let Account {
+            id,
+            name,
+            typ,
+            current,
+            enabled,
+            ..
+        } = repo.get(account)?;
+        table.add_row(vec![
+            id.to_string(),
+            name,
+            typ.to_string(),
+            enabled.to_string(),
+            current.to_string(),
+        ]);
     }
+    println!("{table}");
     Ok(())
 }
