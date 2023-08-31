@@ -37,14 +37,17 @@ fn main() -> eyre::Result<()> {
     let Args { subcommand } = Args::parse();
     let repo: PathBuf = env::var_os("MONFARI_REPO").ok_or(eyre!("MONFARI_REPO must be set"))?.into();
     match subcommand {
-        None => {
-            repl::repl(Repository::open(repo)?)?;
-        }
         Some(Command::Init) => {
             Repository::init(repo)?;
         }
         Some(Command::Clone { url }) => {
             Repository::clone(url, repo)?;
+        }
+        None => {
+            let mut repo = Repository::open(repo)?;
+            repo.pull()?;
+            let mut repo = repl::repl(repo)?;
+            repo.push()?;
         }
         Some(Command::Run { mut args }) => {
             for arg in &mut args {
@@ -52,7 +55,10 @@ fn main() -> eyre::Result<()> {
                     arg.push('"'); arg.insert(0, '"')
                 }
             }
-            repl::command(Repository::open(repo)?, args.join(" "))?;
+            let mut repo = Repository::open(repo)?;
+            repo.pull()?;
+            let mut repo = repl::command(repo, args.join(" "))?;
+            repo.push()?;
         }
     }
 

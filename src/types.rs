@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt::{Debug, Display},
     marker::PhantomData,
-    ops::{Add, Neg, AddAssign},
+    ops::{Add, AddAssign, Neg},
     str::FromStr,
 };
 
@@ -161,17 +161,28 @@ impl<'de> Deserialize<'de> for Currency {
 pub struct Amount(pub i32, pub Currency);
 impl Amount {
     pub fn parse_num(s: &str) -> Option<i32> {
-        s.parse::<i32>().ok().map(|x| x * 100)
-            .or_else(|| {
-                let (whole, cents) = s.split_once('.')?;
-                if cents.len() != 2 || cents.chars().any(|c| !c.is_ascii_digit()) { return None };
-                Some(whole.parse::<i32>().ok()? * 100 + cents.parse::<i32>().ok()?)
-            })
+        s.parse::<i32>().ok().map(|x| x * 100).or_else(|| {
+            let (whole, cents) = s.split_once('.')?;
+            if cents.len() != 2 || cents.chars().any(|c| !c.is_ascii_digit()) {
+                return None;
+            };
+            Some(whole.parse::<i32>().ok()? * 100 + cents.parse::<i32>().ok()?)
+        })
     }
 }
 impl Display for Amount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{} {}", self.0 / 100, if self.0 % 100 != 0 { format!(".{:02}", self.0 % 100) } else { "".to_owned() }, self.1)
+        write!(
+            f,
+            "{}{} {}",
+            self.0 / 100,
+            if self.0 % 100 != 0 {
+                format!(".{:02}", self.0 % 100)
+            } else {
+                "".to_owned()
+            },
+            self.1
+        )
     }
 }
 impl FromStr for Amount {
@@ -180,10 +191,7 @@ impl FromStr for Amount {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let e = "Amounts of currency are formatted as XXXX.XX CCC";
         let (amount, currency) = s.split_once(' ').ok_or(e)?;
-        Ok(Self(
-            Self::parse_num(amount).ok_or(e)?,
-            currency.parse()?,
-        ))
+        Ok(Self(Self::parse_num(amount).ok_or(e)?, currency.parse()?))
     }
 }
 
@@ -235,10 +243,12 @@ impl AddAssign<Amount> for Amounts {
 
 impl Display for Amounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for amount in self.0.values() {
-            write!(f, "{}, ", amount)?;
-        }
-        Ok(())
+        write!(
+            f,
+            "{}",
+            itertools::intersperse(self.0.values().map(|x| x.to_string()), ", ".to_owned())
+                .collect::<String>()
+        )
     }
 }
 
@@ -259,16 +269,20 @@ impl FromStr for AccountType {
         match s.to_lowercase().as_str() {
             "physical" => Ok(Self::Physical),
             "virtual" => Ok(Self::Virtual),
-            _ => Err("No such account type")
+            _ => Err("No such account type"),
         }
     }
 }
 impl Display for AccountType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            AccountType::Physical => "physical",
-            AccountType::Virtual => "virtual",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                AccountType::Physical => "physical",
+                AccountType::Virtual => "virtual",
+            }
+        )
     }
 }
 
@@ -381,7 +395,9 @@ pub enum TransactionInner {
 impl Transaction {
     pub fn results(&self) -> Vec<(Id<Account>, Amount)> {
         use TransactionInner::*;
-        let &Transaction { amount, ref inner, .. } = self;
+        let &Transaction {
+            amount, ref inner, ..
+        } = self;
         match *inner {
             Received {
                 src: _,

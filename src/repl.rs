@@ -359,10 +359,10 @@ impl<'a> Parser<'a> {
 }
 
 #[derive(Clone)]
-struct ReedlineCmd(Arc<RwLock<Repository>>);
+struct ReedlineCmd(Arc<RwLock<Option<Repository>>>);
 impl ReedlineCmd {
     fn parse(&self, line: &str) -> (Vec<Token>, Result<Command, Completions>) {
-        Parser::parse(line, &self.0.read().unwrap())
+        Parser::parse(line, self.0.read().unwrap().as_ref().expect("Tried to parse after taking back repo"))
     }
 }
 impl Completer for ReedlineCmd {
@@ -421,8 +421,8 @@ impl Validator for ReedlineCmd {
     }
 }
 
-pub fn repl(repo: Repository) -> Result<()> {
-    let custom = ReedlineCmd(Arc::new(RwLock::new(repo)));
+pub fn repl(repo: Repository) -> Result<Repository> {
+    let custom = ReedlineCmd(Arc::new(RwLock::new(Some(repo))));
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
@@ -452,15 +452,19 @@ pub fn repl(repo: Repository) -> Result<()> {
                     eprintln!("{e}");
                 }
             }
-            Signal::CtrlD => break Ok(()),
-            Signal::CtrlC => {}
+            Signal::CtrlC => {},
+            Signal::CtrlD => break,
         }
-    }
+    };
+    let mut repo = custom.0.write().unwrap();
+    Ok(repo.take().unwrap())
 }
 
-pub fn command(repo: Repository, cmd: String) -> Result<()> {
-    let custom = ReedlineCmd(Arc::new(RwLock::new(repo)));
-    run_command(&custom, cmd)
+pub fn command(repo: Repository, cmd: String) -> Result<Repository> {
+    let custom = ReedlineCmd(Arc::new(RwLock::new(Some(repo))));
+    run_command(&custom, cmd)?;
+    let mut repo = custom.0.write().unwrap();
+    Ok(repo.take().unwrap())
 }
 
 fn run_command(custom: &ReedlineCmd, cmd: String) -> Result<()> {
@@ -468,7 +472,8 @@ fn run_command(custom: &ReedlineCmd, cmd: String) -> Result<()> {
         .parse(&cmd)
         .1
         .map_err(|_| eyre!("Invalid Command: {}", cmd))?;
-    let repo = &mut *custom.0.write().unwrap();
+    let mut repo = custom.0.write().unwrap();
+    let repo = repo.as_mut().unwrap();
     match cmd {
         Command::AccountsList => accounts_list(repo),
         Command::AccountCreate { typ, name } => account_create(repo, typ, name),

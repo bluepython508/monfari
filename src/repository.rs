@@ -3,7 +3,7 @@ use std::{
     fs,
     io::Write,
     path::PathBuf,
-    process::{self, Stdio},
+    process::{self},
 };
 
 use eyre::{ensure, eyre, Result, WrapErr};
@@ -14,18 +14,19 @@ use tracing::{debug, instrument};
 use crate::{command::*, types::*};
 
 #[instrument]
-fn cmd(cmd: &mut process::Command) -> Result<()> {
-    let status = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    debug!(?status);
+fn cmd(cmd: &mut process::Command) -> Result<String> {
+    let output = cmd.output()?;
+    debug!(?output);
     ensure!(
-        status.success(),
-        "Command {cmd:?} did not exist successfully"
+        output.status.success(),
+        "Command {cmd:?} did not exist successfully
+            stderr: {:?}
+            stdout: {:?}
+        ",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
-    Ok(())
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 macro_rules! cmd {
@@ -253,6 +254,21 @@ impl Repository {
         }
 
         git!(in &self.path, "commit", "-m", message)?;
+        Ok(())
+    }
+
+    #[instrument]
+    pub fn pull(&mut self) -> Result<()> {
+        if git!(in &self.path, "remote")?.lines().count() > 0 {
+            git!(in &self.path, "pull")?;
+        }
+        Ok(())
+    }
+    #[instrument]
+    pub fn push(&mut self) -> Result<()> {
+        if git!(in &self.path, "remote")?.lines().count() > 0 {
+            git!(in &self.path, "push")?;
+        }
         Ok(())
     }
 }
