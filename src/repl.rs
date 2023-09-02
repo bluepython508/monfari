@@ -194,31 +194,31 @@ impl<'a> Parser<'a> {
     }
 
     fn transaction_received(&mut self) -> Result<TransactionInner, Completions> {
-        self.oneof(&["src"])?;
+        self.expect("src")?;
         let src = self.string()?;
-        self.oneof(&["dst"])?;
+        self.expect("dst")?;
         let dst = self.account_phys()?;
-        self.oneof(&["dst-virt"])?;
+        self.expect("dst-virt")?;
         let dst_virt = self.account_virt()?;
         Ok(TransactionInner::Received { src, dst, dst_virt })
     }
 
     fn transaction_paid(&mut self) -> Result<TransactionInner, Completions> {
-        self.oneof(&["dst"])?;
+        self.expect("dst")?;
         let dst = self.string()?;
-        self.oneof(&["src"])?;
+        self.expect("src")?;
         let src = self.account_phys()?;
-        self.oneof(&["src-virt"])?;
+        self.expect("src-virt")?;
         let src_virt = self.account_virt()?;
         Ok(TransactionInner::Paid { src, dst, src_virt })
     }
 
     fn transaction_move_phys(&mut self) -> Result<TransactionInner, Completions> {
-        self.oneof(&["dst"])?;
+        self.expect("dst")?;
         let dst = self.account_phys()?;
-        self.oneof(&["src"])?;
+        self.expect("src")?;
         let src = self.account_phys()?;
-        self.oneof(&["with-fees"])?;
+        self.expect("with-fees")?;
         let fees = self.token(None, |_, s| {
             Some((TokenType::Amount, s.parse::<i32>().ok()?))
         })?;
@@ -226,19 +226,19 @@ impl<'a> Parser<'a> {
     }
 
     fn transaction_move_virt(&mut self) -> Result<TransactionInner, Completions> {
-        self.oneof(&["dst"])?;
+        self.expect("dst")?;
         let dst = self.account_virt()?;
-        self.oneof(&["src"])?;
+        self.expect("src")?;
         let src = self.account_virt()?;
         Ok(TransactionInner::MoveVirt { src, dst })
     }
 
     fn transaction_convert(&mut self) -> Result<TransactionInner, Completions> {
-        self.oneof(&["into"])?;
+        self.expect("into")?;
         let new_amount = self.amount()?;
-        self.oneof(&["account"])?;
+        self.expect("account")?;
         let acc = self.account_phys()?;
-        self.oneof(&["virtual"])?;
+        self.expect("virtual")?;
         let acc_virt = self.account_virt()?;
         Ok(TransactionInner::Convert {
             acc,
@@ -310,15 +310,10 @@ impl<'a> Parser<'a> {
             .map(|x| x.erase().unerase())
     }
 
-    fn oneof<'b>(&mut self, of: &'b [&'b str]) -> Result<&'b str, Completions> {
-        self.token(
-            Some(of.iter().copied().map(|x| x.to_owned()).collect()),
-            |_, tok| {
-                of.iter()
-                    .find(|&&c| c == tok)
-                    .map(|&tok| (TokenType::Command, tok))
-            },
-        )
+    fn expect(&mut self, x: &'static str) -> Result<(), Completions> {
+        self.token(Some([x.to_string()].into_iter().collect()), |_, tok| {
+            (tok == x).then_some((TokenType::Command, ()))
+        })
     }
 
     #[allow(clippy::type_complexity)]
