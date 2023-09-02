@@ -82,23 +82,23 @@ impl RemoteRepository {
     }
 
     #[instrument]
-    pub(super) fn accounts(&mut self) -> Result<Vec<Account>> {
-        Ok(self.accounts.clone())
+    pub(super) fn accounts(&mut self) -> Vec<Account> {
+        self.accounts.clone()
     }
 
     #[instrument]
-    pub(super) fn account(&mut self, id: Id<Account>) -> Result<Account> {
-        self.accounts.iter().find(|x| x.id == id).cloned().ok_or_else(|| eyre!("No account with id {id}"))
+    pub(super) fn account(&mut self, id: Id<Account>) -> Option<Account> {
+        self.accounts.iter().find(|x| x.id == id).cloned()
     }
 }
 
 #[instrument]
 fn run_session(mut connection: Connection, repo: &mut Repository) -> Result<()> {
-    connection.send(repo.accounts()?)?;
+    connection.send(repo.accounts())?;
     while let Some(msg) = connection.receive_or_eof::<Command>()? {
         debug!(?msg);
         repo.run_command(msg)?;
-        connection.send(repo.accounts()?)?;
+        connection.send(repo.accounts())?;
     };
     Ok(())
 }

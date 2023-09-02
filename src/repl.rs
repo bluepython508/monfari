@@ -277,7 +277,6 @@ impl<'a> Parser<'a> {
             Some(
                 self.repo
                     .accounts()
-                    .unwrap_or_default()
                     .into_iter()
                     .filter(|x| x.enabled)
                     .filter(|x| account_type.map_or(true, |typ| x.typ == typ))
@@ -295,7 +294,7 @@ impl<'a> Parser<'a> {
                     tok.parse().ok().filter(|&s| {
                         this.repo
                             .account(s)
-                            .is_ok_and(|acc| account_type.map_or(true, |typ| acc.typ == typ))
+                            .is_some_and(|acc| account_type.map_or(true, |typ| acc.typ == typ))
                     })?,
                 ))
             },
@@ -541,7 +540,7 @@ fn accounts_list(repo: &Repository) -> Result<()> {
         .column_mut(0)
         .expect("Column 0 exists")
         .set_delimiter('-');
-    for account in repo.accounts()? {
+    for account in repo.accounts() {
         let Account {
             id,
             name,

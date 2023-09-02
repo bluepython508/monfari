@@ -45,14 +45,14 @@ impl Repository {
         }
     }
 
-    pub fn accounts(&self) -> Result<Vec<Account>> {
+    pub fn accounts(&self) -> Vec<Account> {
         match &self.0 {
             RepositoryInner::Local(repo) => repo.accounts(),
             RepositoryInner::Remote(repo) => repo.lock().unwrap().accounts(),
         }
     }
 
-    pub fn account(&self, id: Id<Account>) -> Result<Account> {
+    pub fn account(&self, id: Id<Account>) -> Option<Account> {
         match &self.0 {
             RepositoryInner::Local(repo) => repo.account(id),
             RepositoryInner::Remote(repo) => repo.lock().unwrap().account(id),

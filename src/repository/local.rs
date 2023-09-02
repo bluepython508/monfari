@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fs, io::Write, path::PathBuf, process};
+use std::{collections::BTreeMap, fmt::Debug, fs, io::Write, path::PathBuf, process};
 
 use eyre::{ensure, eyre, Context, Result};
 use itertools::Itertools;
@@ -85,6 +85,7 @@ impl Drop for LockFile {
 pub(super) struct LocalRepository {
     path: PathBuf,
     lock: LockFile,
+    accounts: BTreeMap<Id<Account>, Account>,
 }
 
 impl LocalRepository {
@@ -110,7 +111,11 @@ impl LocalRepository {
         git!(in &path, "add", "transactions", "accounts", ".gitignore")?;
 
         let lock = LockFile::acquire(path.join("monfari-repo-lock"))?;
-        let mut this = Self { path, lock };
+        let mut this = Self {
+            path,
+            lock,
+            accounts: Default::default(),
+        };
         this.create_account(Account {
             id: Id::generate(),
             name: "Default Virtual Account".to_owned(),
@@ -132,7 +137,17 @@ impl LocalRepository {
         ensure!(path.join("accounts").is_dir(), "Not initialized");
         ensure!(path.join("transactions").is_dir(), "Not initialized");
         let lock = LockFile::acquire(path.join("monfari-repo-lock"))?;
-        Ok(Self { path, lock })
+        let mut this = Self {
+            path,
+            lock,
+            accounts: Default::default(),
+        };
+        this.accounts = this
+            .list::<Account>()?
+            .into_iter()
+            .map(|acc| Ok((acc, this.get(acc)?)))
+            .collect::<Result<_>>()?;
+        Ok(this)
     }
 }
 
@@ -150,14 +165,14 @@ impl LocalRepository {
     }
 
     #[instrument(skip(f))]
-    fn modify<T: Entity>(&mut self, id: Id<T>, f: impl FnOnce(&mut T) -> Result<()>) -> Result<T> {
-        let mut value = self.get(id)?;
-        f(&mut value)?;
-        assert!(value.id() == id);
-        let path = self.path_for(value.id());
+    fn modify(&mut self, id: Id<Account>, f: impl FnOnce(&mut Account) -> Result<()>) -> Result<()> {
+        let path = self.path_for(id);
+        let value = self.accounts.get_mut(&id).ok_or_else(|| eyre!("No such account {id}"))?;
+        f(value)?;
+        assert!(value.id == id);
         fs::write(&path, toml::to_string_pretty(&value)?)?;
         git!(in &self.path, "add", &path)?;
-        Ok(value)
+        Ok(())
     }
 }
 
@@ -183,6 +198,8 @@ impl LocalRepository {
     #[instrument]
     fn create_account(&mut self, account: Account) -> Result<()> {
         self.create(&account)?;
+        let id = account.id;
+        ensure!(self.accounts.insert(id, account).is_none(), "Cannot overwrite account with duplicate id {id}");
         Ok(())
     }
 
@@ -239,15 +256,12 @@ impl LocalRepository {
     }
 
     #[instrument]
-    pub(super) fn accounts(&self) -> Result<Vec<Account>> {
-        self.list::<Account>()?
-            .into_iter()
-            .map(|x| self.get(x))
-            .collect()
+    pub(super) fn accounts(&self) -> Vec<Account> {
+        self.accounts.values().cloned().collect()
     }
 
     #[instrument]
-    pub(super) fn account(&self, id: Id<Account>) -> Result<Account> {
-        self.get(id)
+    pub(super) fn account(&self, id: Id<Account>) -> Option<Account> {
+        self.accounts.get(&id).cloned()
     }
 }
