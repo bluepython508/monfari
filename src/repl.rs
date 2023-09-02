@@ -276,10 +276,9 @@ impl<'a> Parser<'a> {
         self.token(
             Some(
                 self.repo
-                    .list::<Account>()
+                    .accounts()
+                    .unwrap_or_default()
                     .into_iter()
-                    .flat_map(|x| x.into_iter())
-                    .filter_map(|x| self.repo.get(x).ok())
                     .filter(|x| x.enabled)
                     .filter(|x| account_type.map_or(true, |typ| x.typ == typ))
                     .map(|x| {
@@ -295,7 +294,7 @@ impl<'a> Parser<'a> {
                     TokenType::Id,
                     tok.parse().ok().filter(|&s| {
                         this.repo
-                            .get::<Account>(s)
+                            .account(s)
                             .is_ok_and(|acc| account_type.map_or(true, |typ| acc.typ == typ))
                     })?,
                 ))
@@ -542,7 +541,7 @@ fn accounts_list(repo: &Repository) -> Result<()> {
         .column_mut(0)
         .expect("Column 0 exists")
         .set_delimiter('-');
-    for account in repo.list::<Account>()? {
+    for account in repo.accounts()? {
         let Account {
             id,
             name,
@@ -550,7 +549,7 @@ fn accounts_list(repo: &Repository) -> Result<()> {
             current,
             enabled,
             ..
-        } = repo.get(account)?;
+        } = account;
         table.add_row(vec![
             id.to_string(),
             name,

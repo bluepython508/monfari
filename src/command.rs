@@ -1,15 +1,17 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use super::types::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     CreateAccount(Account),
     UpdateAccount(Id<Account>, Vec<AccountModification>),
     AddTransaction(Transaction),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AccountModification {
     Disable,
     UpdateName(String),
