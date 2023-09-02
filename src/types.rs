@@ -378,7 +378,6 @@ pub enum TransactionInner {
     MovePhys {
         src: Id<Account<Physical>>,
         dst: Id<Account<Physical>>,
-        fees: i32,
     },
     MoveVirt {
         src: Id<Account<Virtual>>,
@@ -411,8 +410,8 @@ impl Transaction {
                 src_virt,
                 dst: _,
             } => vec![(src.into(), -amount), (src_virt.into(), -amount)],
-            MovePhys { src, dst, fees } => {
-                vec![(src.into(), -(amount + fees)), (dst.into(), amount)]
+            MovePhys { src, dst } => {
+                vec![(src.into(), -amount), (dst.into(), amount)]
             }
             MoveVirt { src, dst } => vec![(src.into(), -amount), (dst.into(), amount)],
             Convert {

@@ -218,11 +218,7 @@ impl<'a> Parser<'a> {
         let dst = self.account_phys()?;
         self.expect("src")?;
         let src = self.account_phys()?;
-        self.expect("with-fees")?;
-        let fees = self.token(None, |_, s| {
-            Some((TokenType::Amount, s.parse::<i32>().ok()?))
-        })?;
-        Ok(TransactionInner::MovePhys { src, dst, fees })
+        Ok(TransactionInner::MovePhys { src, dst })
     }
 
     fn transaction_move_virt(&mut self) -> Result<TransactionInner, Completions> {
