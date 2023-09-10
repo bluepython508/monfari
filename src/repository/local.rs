@@ -68,7 +68,6 @@ impl LockFile {
         write!(f, "{}", std::process::id())?;
         Ok(Self(f, path))
     }
-    fn release(self) {}
 }
 
 impl Drop for LockFile {
@@ -84,7 +83,7 @@ impl Drop for LockFile {
 #[derive(Debug)]
 pub(super) struct LocalRepository {
     path: PathBuf,
-    lock: LockFile,
+    _lock: LockFile,
     accounts: BTreeMap<Id<Account>, Account>,
 }
 
@@ -113,7 +112,7 @@ impl LocalRepository {
         let lock = LockFile::acquire(path.join("monfari-repo-lock"))?;
         let mut this = Self {
             path,
-            lock,
+            _lock: lock,
             accounts: Default::default(),
         };
         this.create_account(Account {
@@ -139,7 +138,7 @@ impl LocalRepository {
         let lock = LockFile::acquire(path.join("monfari-repo-lock"))?;
         let mut this = Self {
             path,
-            lock,
+            _lock: lock,
             accounts: Default::default(),
         };
         this.accounts = this
@@ -165,9 +164,16 @@ impl LocalRepository {
     }
 
     #[instrument(skip(f))]
-    fn modify(&mut self, id: Id<Account>, f: impl FnOnce(&mut Account) -> Result<()>) -> Result<()> {
+    fn modify(
+        &mut self,
+        id: Id<Account>,
+        f: impl FnOnce(&mut Account) -> Result<()>,
+    ) -> Result<()> {
         let path = self.path_for(id);
-        let value = self.accounts.get_mut(&id).ok_or_else(|| eyre!("No such account {id}"))?;
+        let value = self
+            .accounts
+            .get_mut(&id)
+            .ok_or_else(|| eyre!("No such account {id}"))?;
         f(value)?;
         assert!(value.id == id);
         fs::write(&path, toml::to_string_pretty(&value)?)?;
@@ -199,7 +205,10 @@ impl LocalRepository {
     fn create_account(&mut self, account: Account) -> Result<()> {
         self.create(&account)?;
         let id = account.id;
-        ensure!(self.accounts.insert(id, account).is_none(), "Cannot overwrite account with duplicate id {id}");
+        ensure!(
+            self.accounts.insert(id, account).is_none(),
+            "Cannot overwrite account with duplicate id {id}"
+        );
         Ok(())
     }
 

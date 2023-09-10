@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod command;
 mod repl;
 mod repository;
@@ -7,15 +5,12 @@ mod types;
 
 use std::{
     env,
-    ffi::OsString,
-    net::{SocketAddr, TcpStream},
-    path::Path,
+    net::SocketAddr, path::PathBuf,
 };
 
 use clap::{Parser, Subcommand};
 use eyre::{eyre, Result};
 use repository::Repository;
-use tracing::instrument;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser)]
@@ -26,9 +21,24 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    Init,
-    Serve { addr: SocketAddr },
-    Run { args: Vec<String> },
+    Init { path: PathBuf },
+    Serve {
+        #[command(subcommand)]
+        mode: ServeMode,
+    },
+    Run {
+        args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServeMode {
+    /// Serve over stdin/stdout
+    Stdio,
+    /// Bind to a listening socket ourselves
+    Bind { addr: SocketAddr },
+    /// Get socket listener from systemd LISTEN_FDS
+    Systemd,
 }
 
 fn main() -> Result<()> {
@@ -43,11 +53,11 @@ fn main() -> Result<()> {
     let Args { subcommand } = Args::parse();
     let repo = env::var_os("MONFARI_REPO").ok_or(eyre!("MONFARI_REPO must be set"))?;
     match subcommand {
-        Some(Command::Init) => {
-            Repository::init(repo.into())?;
+        Some(Command::Init { path }) => {
+            Repository::init(path)?;
         }
         None => {
-            repl::repl(open(repo)?)?;
+            repl::repl(Repository::open(&repo)?)?;
         }
         Some(Command::Run { mut args }) => {
             for arg in &mut args {
@@ -55,23 +65,13 @@ fn main() -> Result<()> {
                     *arg = format!("\"{}\"", arg);
                 }
             }
-            repl::command(open(repo)?, args.join(" "))?;
+            repl::command(Repository::open(&repo)?, args.join(" "))?;
         }
-        Some(Command::Serve { addr }) => {
-            repository::serve(addr, repo)?;
+        Some(Command::Serve { mode }) => {
+            repository::serve(mode, repo)?;
         }
     }
 
     Ok(())
 }
 
-#[instrument]
-fn open(addr: OsString) -> Result<Repository> {
-    if Path::new(&addr).exists() {
-        return Repository::open(addr.into());
-    }
-    Repository::connect(TcpStream::connect(
-        addr.to_str()
-            .ok_or(eyre!("Expected valid UTF-8 to connect to"))?,
-    )?)
-}

@@ -1,20 +1,23 @@
-use eyre::{eyre, Context, Result};
+use eyre::{ensure, eyre, Context, Result, bail};
 use serde::{de::DeserializeOwned, Serialize};
-use tracing::{instrument, debug};
 use std::{
+    env,
+    ffi::{OsStr, OsString},
     fmt,
-    io::{BufRead, BufReader, BufWriter, Write},
-    net::{SocketAddr, TcpStream, TcpListener}, ffi::OsString
+    io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
+    net::TcpListener,
+    process, os::fd::FromRawFd,
 };
+use tracing::{debug, instrument};
 
 use crate::command::Command;
 use crate::types::*;
 
 use super::Repository;
 
-struct Connection {
+pub struct Connection {
     writer: BufWriter<Box<dyn Write + Send>>,
-    reader: Box<dyn BufRead + Send>,
+    reader: BufReader<Box<dyn Read + Send>>,
 }
 impl fmt::Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -23,11 +26,14 @@ impl fmt::Debug for Connection {
 }
 
 impl Connection {
-    pub fn new(reader: impl BufRead + Send + 'static, writer: impl Write + Send + 'static) -> Result<Self> {
-        Ok(Self {
+    pub fn new(
+        reader: impl Read + Send + 'static,
+        writer: impl Write + Send + 'static,
+    ) -> Self {
+        Self {
             writer: BufWriter::new(Box::new(writer)),
-            reader: Box::new(reader),
-        })
+            reader: BufReader::new(Box::new(reader)),
+        }
     }
 
     fn send<T: Serialize>(&mut self, message: T) -> Result<()> {
@@ -57,13 +63,12 @@ impl Connection {
 #[derive(Debug)]
 pub(super) struct RemoteRepository {
     connection: Connection,
-    accounts: Vec<Account>
+    accounts: Vec<Account>,
 }
 
 impl RemoteRepository {
     #[instrument]
-    pub(super) fn connect(stream: TcpStream) -> Result<Self> {
-        let mut connection = Connection::new(BufReader::new(stream.try_clone()?), stream)?;
+    pub(super) fn open(mut connection: Connection) -> Result<Self> {
         Ok(Self {
             accounts: connection.receive()?,
             connection,
@@ -75,7 +80,8 @@ impl RemoteRepository {
     #[instrument]
     pub(super) fn run_command(&mut self, command: Command) -> Result<()> {
         self.connection.send(command)?;
-        self.accounts = self.connection
+        self.accounts = self
+            .connection
             .receive()
             .wrap_err("Expected acknowledgement of command")?;
         Ok(())
@@ -93,23 +99,55 @@ impl RemoteRepository {
 }
 
 #[instrument]
-fn run_session(mut connection: Connection, repo: &mut Repository) -> Result<()> {
+fn run_session(mut connection: Connection, repo: &OsStr) -> Result<()> {
+    let mut repo = Repository::open(repo)?;
     connection.send(repo.accounts())?;
     while let Some(msg) = connection.receive_or_eof::<Command>()? {
         debug!(?msg);
         repo.run_command(msg)?;
         connection.send(repo.accounts())?;
-    };
+    }
     Ok(())
 }
 
 #[instrument]
-pub fn serve(addr: SocketAddr, repo: OsString) -> Result<()> {
-    let listener = TcpListener::bind(addr)?;
+fn serve_listener(listener: TcpListener, repo: OsString) -> Result<()> {
     loop {
         let (stream, _) = listener.accept()?;
-        let connection = Connection::new(BufReader::new(stream.try_clone()?), stream)?;
-        let mut repo = crate::open(repo.clone())?;
-        run_session(connection, &mut repo)?;
+        let connection = Connection::new(BufReader::new(stream.try_clone()?), stream);
+        run_session(connection, &repo)?;
+    }
+}
+
+#[instrument]
+fn is_fd_inet_socket(fd: i32) -> Result<bool> {
+    use nix::sys::socket::{getsockname, AddressFamily::*, SockaddrLike, SockaddrStorage};
+    Ok(getsockname::<SockaddrStorage>(fd)?
+        .family()
+        .is_some_and(|f| matches!(f, Inet | Inet6)))
+}
+
+#[instrument]
+fn serve_systemd_listener(repo: OsString) -> Result<()> {
+    ensure!(
+        env::var("LISTEN_PID")?.parse::<u32>()? == process::id(),
+        "This process should not be listening for systemd sockets"
+    );
+    let n_fds = env::var("LISTEN_FDS")?.parse::<i32>()?;
+    let mut listeners = (3..3 + n_fds).map(|fd| {
+        ensure!(is_fd_inet_socket(fd)?, "Systemd-provided fd is not an inet socket!");
+        Ok(unsafe { TcpListener::from_raw_fd(fd) })
+    }).collect::<Result<Vec<_>>>()?;
+    let Some(listener) = listeners.pop() else { bail!("One listener must be provided") };
+    ensure!(listeners.is_empty(), "More than one listener is not supported at present");
+    serve_listener(listener, repo)
+}
+
+#[instrument]
+pub fn serve(mode: crate::ServeMode, repo: OsString) -> Result<()> {
+    match mode {
+        crate::ServeMode::Stdio => run_session(Connection::new(stdin(), stdout()), &repo),
+        crate::ServeMode::Bind { addr } => serve_listener(TcpListener::bind(addr)?, repo),
+        crate::ServeMode::Systemd => serve_systemd_listener(repo),
     }
 }

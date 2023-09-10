@@ -104,5 +104,42 @@
       };
       default = monfari;
     });
+    nixosModules.monfari = { lib, pkgs, config, ... }: with lib; let
+      cfg = config.services.bluepython508.monfari;
+    in {
+      options.services.bluepython508.monfari = {
+        enable = mkEnableOption "monfari server";
+        address = mkOption {
+          type = types.str;
+        };
+      };
+      config.systemd = mkIf cfg.enable { 
+        services.monfari = {
+          description = "Monfari";
+          serviceConfig.ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
+          serviceConfig.ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve systemd";
+          environment = {
+            MONFARI_REPO = "path:/var/lib/monfari";
+            RUST_BACKTRACE = "1";
+            RUST_SPANTRACE = "1";
+            RUST_LOG = "debug";
+            GIT_AUTHOR_NAME = "User";
+            GIT_AUTHOR_EMAIL = "user@example.org";
+            GIT_COMMITTER_NAME = "User";
+            GIT_COMMITTER_EMAIL = "user@example.org";
+          };
+          serviceConfig = {
+            DynamicUser = true;
+            ProtectHome = true;
+            PrivateUsers = true;
+            StateDirectory = "monfari";
+          };
+        };
+        sockets.monfari = {
+          listenStreams = [ cfg.address ];
+          wantedBy = [ "sockets.target" ];
+        };
+      };
+    };
   };
 }

@@ -161,6 +161,7 @@ impl<'a> Parser<'a> {
             ("list", &|_| Ok(Command::AccountsList)),
             ("create", &Self::account_create),
             ("disable", &Self::account_disable),
+            ("rename", &Self::account_rename),
         ])
     }
 
@@ -178,6 +179,15 @@ impl<'a> Parser<'a> {
         Ok(Command::AccountModify(
             id,
             vec![AccountModification::Disable],
+        ))
+    }
+
+    fn account_rename(&mut self) -> Result<Command, Completions> {
+        let id = self.account_id(None)?;
+        let name = self.string()?;
+        Ok(Command::AccountModify(
+            id,
+            vec![AccountModification::UpdateName(name)],
         ))
     }
 

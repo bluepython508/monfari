@@ -296,52 +296,6 @@ pub struct Account<Type = AccountType> {
     pub enabled: bool,
 }
 
-impl<T> Account<T> {
-    fn change_type<U>(self, typ: U) -> Account<U> {
-        let Account {
-            id,
-            name,
-            notes,
-            typ: _,
-            current,
-            enabled,
-        } = self;
-        Account {
-            id: id.erase().unerase(),
-            name,
-            notes,
-            typ,
-            current,
-            enabled,
-        }
-    }
-}
-
-impl Account<Physical> {
-    fn erase(self) -> Account<AccountType> {
-        self.change_type(AccountType::Physical)
-    }
-    fn from_erased(t: Account<AccountType>) -> Option<Self> {
-        if let AccountType::Physical = t.typ {
-            Some(t.change_type(Physical))
-        } else {
-            None
-        }
-    }
-}
-impl Account<Virtual> {
-    fn erase(self) -> Account<AccountType> {
-        self.change_type(AccountType::Virtual)
-    }
-    fn from_erased(t: Account<AccountType>) -> Option<Self> {
-        if let AccountType::Virtual = t.typ {
-            Some(t.change_type(Virtual))
-        } else {
-            None
-        }
-    }
-}
-
 impl From<Id<Account<Physical>>> for Id<Account> {
     fn from(x: Id<Account<Physical>>) -> Id<Account> {
         x.erase().unerase()
