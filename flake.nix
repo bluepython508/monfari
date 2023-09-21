@@ -114,10 +114,8 @@
         };
       };
       config.systemd = mkIf cfg.enable { 
-        services.monfari = {
+        services."monfari@" = {
           description = "Monfari";
-          serviceConfig.ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
-          serviceConfig.ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve systemd";
           environment = {
             MONFARI_REPO = "path:/var/lib/monfari";
             RUST_BACKTRACE = "1";
@@ -129,14 +127,24 @@
             GIT_COMMITTER_EMAIL = "user@example.org";
           };
           serviceConfig = {
+            ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
+            ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve stdio";
             DynamicUser = true;
             ProtectHome = true;
             PrivateUsers = true;
             StateDirectory = "monfari";
+            StandardInput = "socket";
+            StandardError = "journal";
           };
+          unitConfig.CollectionPolicy = "inactive-or-failed";
         };
         sockets.monfari = {
           listenStreams = [ cfg.address ];
+          socketConfig = {
+            Accept = true;
+            Backlog = 0;
+            MaxConnections = 1;
+          };
           wantedBy = [ "sockets.target" ];
         };
       };
