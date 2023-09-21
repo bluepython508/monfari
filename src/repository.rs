@@ -69,6 +69,13 @@ impl Repository {
             RepositoryInner::Remote(repo) => repo.lock().unwrap().account(id),
         }
     }
+
+    pub fn transactions(&self, id: Id<Account>) -> Result<Vec<Transaction>> {
+        match &self.0 {
+            RepositoryInner::Local(repo) => repo.transactions(id),
+            RepositoryInner::Remote(repo) => repo.lock().unwrap().transactions(id),
+        }
+    }
 }
 
 pub use remote::serve;

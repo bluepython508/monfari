@@ -1,9 +1,9 @@
 use eyre::{ensure, eyre, Context, Result, bail};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Serialize, Deserialize};
 use std::{
     env,
     ffi::{OsStr, OsString},
-    fmt,
+    fmt::{self, Debug},
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
     net::TcpListener,
     process, os::fd::FromRawFd,
@@ -14,6 +14,12 @@ use crate::command::Command;
 use crate::types::*;
 
 use super::Repository;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum Message {
+    Command { command: Command },
+    Transactions { account: Id<Account> },
+}
 
 pub struct Connection {
     writer: BufWriter<Box<dyn Write + Send>>,
@@ -36,19 +42,22 @@ impl Connection {
         }
     }
 
-    fn send<T: Serialize>(&mut self, message: T) -> Result<()> {
+    #[instrument]
+    fn send<T: Serialize + Debug>(&mut self, message: T) -> Result<()> {
         serde_json::to_writer(&mut self.writer, &message)?;
         self.writer.write_all(&[0])?;
         self.writer.flush()?;
         Ok(())
     }
 
-    fn receive<T: DeserializeOwned>(&mut self) -> Result<T> {
+    #[instrument(ret)]
+    fn receive<T: DeserializeOwned + Debug>(&mut self) -> Result<T> {
         self.receive_or_eof()
             .and_then(|x| x.ok_or_else(|| eyre!("Unexpected EOF")))
     }
 
-    fn receive_or_eof<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
+    #[instrument(ret)]
+    fn receive_or_eof<T: DeserializeOwned + Debug>(&mut self) -> Result<Option<T>> {
         if self.reader.fill_buf()?.is_empty() {
             return Ok(None);
         } // EOF
@@ -79,11 +88,11 @@ impl RemoteRepository {
 impl RemoteRepository {
     #[instrument]
     pub(super) fn run_command(&mut self, command: Command) -> Result<()> {
-        self.connection.send(command)?;
+        self.connection.send(Message::Command { command })?;
         self.accounts = self
             .connection
             .receive()
-            .wrap_err("Expected acknowledgement of command")?;
+            .wrap_err("Expected to receive accounts list after command")?;
         Ok(())
     }
 
@@ -96,16 +105,29 @@ impl RemoteRepository {
     pub(super) fn account(&mut self, id: Id<Account>) -> Option<Account> {
         self.accounts.iter().find(|x| x.id == id).cloned()
     }
+
+    #[instrument]
+    pub(super) fn transactions(&mut self, account: Id<Account>) -> Result<Vec<Transaction>> {
+        self.connection.send(Message::Transactions { account })?;
+        self.connection.receive()
+    }
 }
 
 #[instrument]
 fn run_session(mut connection: Connection, repo: &OsStr) -> Result<()> {
     let mut repo = Repository::open(repo)?;
     connection.send(repo.accounts())?;
-    while let Some(msg) = connection.receive_or_eof::<Command>()? {
+    while let Some(msg) = connection.receive_or_eof::<Message>()? {
         debug!(?msg);
-        repo.run_command(msg)?;
-        connection.send(repo.accounts())?;
+        match msg {
+            Message::Command { command } => {
+                repo.run_command(command)?;
+                connection.send(repo.accounts())?;
+            }
+            Message::Transactions { account } => {
+                connection.send(repo.transactions(account)?)?;
+            }
+        }
     }
     Ok(())
 }

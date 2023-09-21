@@ -47,12 +47,15 @@ impl<T> Id<T> {
     pub fn new(id: Ulid) -> Self {
         Self(id, PhantomData)
     }
-    pub fn erase(self) -> Id<()> {
+}
+
+impl<T> Id<Account<T>> {
+    pub fn erase(self) -> Id<Account> {
         Id::new(self.0)
     }
 }
-impl Id<()> {
-    pub fn unerase<T>(self) -> Id<T> {
+impl Id<Account> {
+    pub fn unerase<T>(self) -> Id<Account<T>> {
         Id::new(self.0)
     }
 }
@@ -378,6 +381,16 @@ impl Transaction {
                 (acc_virt.into(), -amount),
                 (acc_virt.into(), new_amount),
             ],
+        }
+    }
+
+    pub fn accounts(&self) -> [Id<Account>; 2] {
+        match &self.inner {
+            TransactionInner::Received { src: _, dst, dst_virt } => [dst.erase(), dst_virt.erase()],
+            TransactionInner::Paid { src, src_virt, dst: _ } => [src.erase(), src_virt.erase()],
+            TransactionInner::MovePhys { src, dst } => [src.erase(), dst.erase()],
+            TransactionInner::MoveVirt { src, dst } => [src.erase(), dst.erase()],
+            TransactionInner::Convert { acc, acc_virt, new_amount: _ } => [acc.erase(), acc_virt.erase()],
         }
     }
 }

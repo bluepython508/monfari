@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use eyre::{eyre, Result};
 use itertools::Itertools;
+use tracing::instrument;
 
 use crate::{
     command::{self, AccountModification},
@@ -77,6 +78,7 @@ enum Command {
         typ: AccountType,
         name: String,
     },
+    AccountShow { id: Id<Account> },
     AccountModify(Id<Account>, Vec<AccountModification>),
     TransactionAdd {
         amount: Amount,
@@ -162,6 +164,7 @@ impl<'a> Parser<'a> {
             ("create", &Self::account_create),
             ("disable", &Self::account_disable),
             ("rename", &Self::account_rename),
+            ("show", &Self::account_show),
         ])
     }
 
@@ -189,6 +192,11 @@ impl<'a> Parser<'a> {
             id,
             vec![AccountModification::UpdateName(name)],
         ))
+    }
+
+    fn account_show(&mut self) -> Result<Command, Completions> {
+        let id = self.account_id(None)?;
+        Ok(Command::AccountShow { id })
     }
 
     fn transaction(&mut self) -> Result<Command, Completions> {
@@ -309,11 +317,11 @@ impl<'a> Parser<'a> {
 
     fn account_phys(&mut self) -> Result<Id<Account<Physical>>, Completions> {
         self.account_id(Some(AccountType::Physical))
-            .map(|x| x.erase().unerase())
+            .map(|x| x.unerase())
     }
     fn account_virt(&mut self) -> Result<Id<Account<Virtual>>, Completions> {
         self.account_id(Some(AccountType::Virtual))
-            .map(|x| x.erase().unerase())
+            .map(|x| x.unerase())
     }
 
     fn expect(&mut self, x: &'static str) -> Result<(), Completions> {
@@ -483,11 +491,13 @@ fn run_command(custom: &ReedlineCmd, cmd: String) -> Result<()> {
     match cmd {
         Command::AccountsList => accounts_list(repo),
         Command::AccountCreate { typ, name } => account_create(repo, typ, name),
+        Command::AccountShow { id } => account_show(repo, id),
         Command::AccountModify(id, mods) => account_modify(repo, id, mods),
         Command::TransactionAdd { amount, inner } => transaction(repo, amount, inner),
     }
 }
 
+#[instrument]
 fn transaction(repo: &mut Repository, amount: Amount, inner: TransactionInner) -> Result<()> {
     let notes = edit::edit("# Notes")?
         .lines()
@@ -504,6 +514,7 @@ fn transaction(repo: &mut Repository, amount: Amount, inner: TransactionInner) -
     Ok(())
 }
 
+#[instrument]
 fn account_modify(
     repo: &mut Repository,
     id: Id<Account>,
@@ -513,6 +524,7 @@ fn account_modify(
     Ok(())
 }
 
+#[instrument]
 fn account_create(repo: &mut Repository, typ: AccountType, name: String) -> Result<()> {
     let notes = edit::edit("# Notes")?
         .lines()
@@ -531,6 +543,7 @@ fn account_create(repo: &mut Repository, typ: AccountType, name: String) -> Resu
     Ok(())
 }
 
+#[instrument]
 fn accounts_list(repo: &Repository) -> Result<()> {
     use comfy_table::*;
     let mut table = Table::new();
@@ -556,6 +569,40 @@ fn accounts_list(repo: &Repository) -> Result<()> {
             typ.to_string(),
             enabled.to_string(),
             current.to_string(),
+        ]);
+    }
+    println!("{table}");
+    Ok(())
+}
+
+fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
+    let Account { id, name, typ, current, enabled: _, notes: _ } = repo.account(account).ok_or_else(|| eyre!("No such account {account}"))?;
+    let transactions = repo.transactions(id)?;
+    println!("{name} ({typ}: {id})");
+    println!("{current}");
+    use comfy_table::*;
+    let mut table = Table::new();
+    table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Amount", "Description", "Notes"]);
+    for transaction in transactions {
+        let moved = |src, dst| -> Result<_> {
+            let (direction, other) = if src == account { ("into", dst) } else { ("from", src) };
+            let name = repo.account(other).ok_or_else(|| eyre!("No such account {other}"))?.name;
+            Ok(format!("Moved {direction} \"{name}\""))
+        };
+        let Transaction { id: _, notes, amount, inner } = transaction;
+        let desc = match inner {
+            TransactionInner::Received { src, .. } => format!("Received from {src}"),
+            TransactionInner::Paid { dst, .. } => format!("Paid to {dst}"),
+            TransactionInner::MovePhys { src, dst } => moved(src.erase(), dst.erase())?,
+            TransactionInner::MoveVirt { src, dst } => moved(src.erase(), dst.erase())?,
+            TransactionInner::Convert { new_amount, .. } => format!("Converted into {new_amount}"),
+        };
+        table.add_row(vec![
+            amount.to_string(),
+            desc,
+            notes
         ]);
     }
     println!("{table}");

@@ -3,15 +3,14 @@ mod repl;
 mod repository;
 mod types;
 
-use std::{
-    env,
-    net::SocketAddr, path::PathBuf,
-};
+use std::{env, io, net::SocketAddr, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use eyre::{eyre, Result};
 use repository::Repository;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::{fmt, registry, EnvFilter};
 
 #[derive(Parser)]
 struct Args {
@@ -21,7 +20,9 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    Init { path: PathBuf },
+    Init {
+        path: PathBuf,
+    },
     Serve {
         #[command(subcommand)]
         mode: ServeMode,
@@ -44,9 +45,14 @@ pub enum ServeMode {
 fn main() -> Result<()> {
     color_eyre::install()?;
     tracing::subscriber::set_global_default(
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer())
-            .with(tracing_subscriber::EnvFilter::from_default_env())
+        registry()
+            .with(
+                fmt::layer()
+                    .event_format(fmt::format().with_ansi(true).pretty())
+                    .with_span_events(FmtSpan::ACTIVE)
+                    .with_writer(io::stderr),
+            )
+            .with(EnvFilter::from_default_env())
             .with(tracing_error::ErrorLayer::default()),
     )?;
 
@@ -74,4 +80,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-

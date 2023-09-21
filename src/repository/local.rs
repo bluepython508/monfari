@@ -273,4 +273,17 @@ impl LocalRepository {
     pub(super) fn account(&self, id: Id<Account>) -> Option<Account> {
         self.accounts.get(&id).cloned()
     }
+
+    #[instrument]
+    pub(super) fn transactions(&self, id: Id<Account>) -> Result<Vec<Transaction>> {
+        self.list::<Transaction>()?
+            .into_iter()
+            .map(|x| self.get(x))
+            .filter_ok(|x| x.accounts().contains(&id))
+            .collect::<Result<Vec<_>>>()
+            .map(|mut x| {
+                x.sort_unstable_by_key(|t| t.id);
+                x
+            })
+    }
 }
