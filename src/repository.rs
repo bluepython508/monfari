@@ -11,6 +11,8 @@ use local::LocalRepository;
 mod remote;
 use remote::RemoteRepository;
 
+pub use remote::serve;
+
 #[derive(Debug)]
 enum RepositoryInner {
     Local(LocalRepository),
@@ -32,7 +34,8 @@ impl Repository {
         match addr.split_once(':') {
             None => Self::open_local(addr.as_ref()),
             Some(("path", path)) => Self::open_local(path.as_ref()),
-            Some(("tcp", addr)) => Self::open_remote(addr),
+            Some(("tcp", addr)) => Self::open_tcp(addr),
+            Some(("http" | "https", _)) => Self::open_http(addr.to_owned()),
             Some((proto, _)) => bail!("Unknown proto {proto}"),
         }
         
@@ -42,11 +45,15 @@ impl Repository {
         Ok(Self(RepositoryInner::Local(LocalRepository::open(path.to_owned())?)))
     }
 
-    fn open_remote(s: impl ToSocketAddrs) -> Result<Self> {
+    fn open_tcp(s: impl ToSocketAddrs) -> Result<Self> {
         let stream = TcpStream::connect(s)?;
-        Ok(Self(RepositoryInner::Remote(Mutex::new(RemoteRepository::open(
-            Connection::new(stream.try_clone()?, stream)
+        Ok(Self(RepositoryInner::Remote(Mutex::new(RemoteRepository::open_tcp(
+            stream
         )?))))
+    }
+
+    fn open_http(s: String) -> Result<Self> {
+        Ok(Self(RepositoryInner::Remote(Mutex::new(RemoteRepository::open_http(s)?))))
     }
 
     pub fn run_command(&mut self, cmd: Command) -> Result<()> {
@@ -78,6 +85,3 @@ impl Repository {
     }
 }
 
-pub use remote::serve;
-
-use self::remote::Connection;

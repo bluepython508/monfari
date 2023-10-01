@@ -66,7 +66,7 @@
     }: {
       monfari = craneLib.buildPackage {
         preFixup = ''
-          wrapProgram $out/bin/monfari --prefix PATH : ${lib.makeBinPath (with pkgs; [git nix])}
+          wrapProgram $out/bin/monfari --prefix PATH : ${pkgs.git}/bin
         '';
         nativeBuildInputs = [pkgs.makeBinaryWrapper];
         inherit src cargoArtifacts;
@@ -114,7 +114,7 @@
         };
       };
       config.systemd = mkIf cfg.enable { 
-        services."monfari@" = {
+        services.monfari = {
           description = "Monfari";
           environment = {
             MONFARI_REPO = "path:/var/lib/monfari";
@@ -126,26 +126,16 @@
             GIT_COMMITTER_NAME = "User";
             GIT_COMMITTER_EMAIL = "user@example.org";
           };
+          wantedBy = [ "multi-user.target" ];
           serviceConfig = {
             ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
-            ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve stdio";
+            ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve http ${cfg.address}";
+            ExecStop = "${lib.getExe pkgs.curl} -XPOST http://${cfg.address}/__stop__";
             DynamicUser = true;
             ProtectHome = true;
             PrivateUsers = true;
             StateDirectory = "monfari";
-            StandardInput = "socket";
-            StandardError = "journal";
           };
-          unitConfig.CollectionPolicy = "inactive-or-failed";
-        };
-        sockets.monfari = {
-          listenStreams = [ cfg.address ];
-          socketConfig = {
-            Accept = true;
-            Backlog = 0;
-            MaxConnections = 1;
-          };
-          wantedBy = [ "sockets.target" ];
         };
       };
     };

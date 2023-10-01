@@ -1,17 +1,25 @@
-use eyre::{ensure, eyre, Context, Result, bail};
-use serde::{de::DeserializeOwned, Serialize, Deserialize};
+use eyre::{bail, ensure, eyre, Result};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     env,
     ffi::{OsStr, OsString},
     fmt::{self, Debug},
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
-    net::TcpListener,
-    process, os::fd::FromRawFd,
+    net::{TcpListener, TcpStream},
+    os::fd::FromRawFd,
+    process,
+    sync::{Arc, Mutex},
 };
 use tracing::{debug, instrument};
 
 use crate::command::Command;
 use crate::types::*;
+use axum::{
+    extract::{self, Path},
+    response::Json,
+    routing::{get, post},
+    Router,
+};
 
 use super::Repository;
 
@@ -21,7 +29,7 @@ enum Message {
     Transactions { account: Id<Account> },
 }
 
-pub struct Connection {
+struct Connection {
     writer: BufWriter<Box<dyn Write + Send>>,
     reader: BufReader<Box<dyn Read + Send>>,
 }
@@ -32,10 +40,7 @@ impl fmt::Debug for Connection {
 }
 
 impl Connection {
-    pub fn new(
-        reader: impl Read + Send + 'static,
-        writer: impl Write + Send + 'static,
-    ) -> Self {
+    pub fn new(reader: impl Read + Send + 'static, writer: impl Write + Send + 'static) -> Self {
         Self {
             writer: BufWriter::new(Box::new(writer)),
             reader: BufReader::new(Box::new(reader)),
@@ -70,29 +75,85 @@ impl Connection {
 }
 
 #[derive(Debug)]
+enum RemoteHandle {
+    Tcp(Connection),
+    Http {
+        agent: ureq::Agent,
+        base_url: String,
+    },
+}
+
+impl RemoteHandle {
+    #[instrument]
+    fn connect_tcp(stream: TcpStream) -> Result<(Self, Vec<Account>)> {
+        let mut connection = Connection::new(stream.try_clone()?, stream);
+        let accounts = connection.receive()?;
+        Ok((Self::Tcp(connection), accounts))
+    }
+
+    #[instrument]
+    fn connect_http(mut base_url: String) -> Result<(Self, Vec<Account>)> {
+        if base_url.ends_with('/') {
+            base_url.pop();
+        };
+        let agent = ureq::Agent::new();
+        let accounts = agent.get(&format!("{base_url}/")).call()?.into_json()?;
+        Ok((Self::Http { agent, base_url }, accounts))
+    }
+
+    #[instrument]
+    fn run_command(&mut self, command: Command) -> Result<Vec<Account>> {
+        match self {
+            Self::Tcp(conn) => {
+                conn.send(Message::Command { command })?;
+                conn.receive()
+            }
+            Self::Http { agent, base_url } => Ok(agent
+                .post(&format!("{base_url}/"))
+                .send_json(command)?
+                .into_json()?),
+        }
+    }
+
+    #[instrument]
+    fn transactions(&mut self, account: Id<Account>) -> Result<Vec<Transaction>> {
+        match self {
+            Self::Tcp(conn) => {
+                conn.send(Message::Transactions { account })?;
+                conn.receive()
+            }
+            Self::Http { agent, base_url } => Ok(agent
+                .get(&format!("{base_url}/transactions/{account}"))
+                .call()?
+                .into_json()?)
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct RemoteRepository {
-    connection: Connection,
+    handle: RemoteHandle,
     accounts: Vec<Account>,
 }
 
 impl RemoteRepository {
     #[instrument]
-    pub(super) fn open(mut connection: Connection) -> Result<Self> {
-        Ok(Self {
-            accounts: connection.receive()?,
-            connection,
-        })
+    pub(super) fn open_tcp(stream: TcpStream) -> Result<Self> {
+        let (handle, accounts) = RemoteHandle::connect_tcp(stream)?;
+        Ok(Self { handle, accounts })
+    }
+
+    #[instrument]
+    pub(super) fn open_http(url: String) -> Result<Self> {
+        let (handle, accounts) = RemoteHandle::connect_http(url)?;
+        Ok(Self { handle, accounts })
     }
 }
 
 impl RemoteRepository {
     #[instrument]
     pub(super) fn run_command(&mut self, command: Command) -> Result<()> {
-        self.connection.send(Message::Command { command })?;
-        self.accounts = self
-            .connection
-            .receive()
-            .wrap_err("Expected to receive accounts list after command")?;
+        self.accounts = self.handle.run_command(command)?;
         Ok(())
     }
 
@@ -108,8 +169,7 @@ impl RemoteRepository {
 
     #[instrument]
     pub(super) fn transactions(&mut self, account: Id<Account>) -> Result<Vec<Transaction>> {
-        self.connection.send(Message::Transactions { account })?;
-        self.connection.receive()
+        self.handle.transactions(account)
     }
 }
 
@@ -156,13 +216,62 @@ fn serve_systemd_listener(repo: OsString) -> Result<()> {
         "This process should not be listening for systemd sockets"
     );
     let n_fds = env::var("LISTEN_FDS")?.parse::<i32>()?;
-    let mut listeners = (3..3 + n_fds).map(|fd| {
-        ensure!(is_fd_inet_socket(fd)?, "Systemd-provided fd is not an inet socket!");
-        Ok(unsafe { TcpListener::from_raw_fd(fd) })
-    }).collect::<Result<Vec<_>>>()?;
+    let mut listeners = (3..3 + n_fds)
+        .map(|fd| {
+            ensure!(
+                is_fd_inet_socket(fd)?,
+                "Systemd-provided fd is not an inet socket!"
+            );
+            Ok(unsafe { TcpListener::from_raw_fd(fd) })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let Some(listener) = listeners.pop() else { bail!("One listener must be provided") };
-    ensure!(listeners.is_empty(), "More than one listener is not supported at present");
+    ensure!(
+        listeners.is_empty(),
+        "More than one listener is not supported at present"
+    );
     serve_listener(listener, repo)
+}
+
+#[tokio::main]
+#[instrument]
+async fn serve_http(addr: String, repo: OsString) -> Result<()> {
+    let repo = Arc::new(Mutex::new(Repository::open(&repo)?));
+    let account_list = {
+        let repo = repo.clone();
+        move || async move { Json(repo.lock().unwrap().accounts()) }
+    };
+    let run_command = {
+        let repo = repo.clone();
+        move |extract::Json(command)| async move {
+            debug!(?command, "run command");
+            let mut repo = repo.lock().unwrap();
+            repo.run_command(command).map_err(|x| format!("{x}"))?;
+            Ok::<_, String>(Json(repo.accounts()))
+        }
+    };
+    let transaction_list = move |Path(account)| async move {
+        debug!(?account, "transaction list");
+        repo.lock()
+            .unwrap()
+            .transactions(account)
+            .map(Json)
+            .map_err(|x| format!("{x}"))
+    };
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let stop_tx = Arc::new(Mutex::new(Some(stop_tx)));
+    let stop = move || async move { stop_tx.lock().unwrap().take().unwrap().send(()).unwrap(); "" };
+    let app = Router::new()
+        .route("/", get(account_list).post(run_command))
+        .route("/transactions/:account", get(transaction_list))
+        .route("/__stop__", post(stop))
+        .layer(tower_http::trace::TraceLayer::new_for_http());
+
+    axum::Server::bind(&addr.parse().unwrap())
+        .serve(app.into_make_service())
+        .with_graceful_shutdown(async { stop_rx.await.ok(); })
+        .await?;
+    Ok(())
 }
 
 #[instrument]
@@ -170,6 +279,7 @@ pub fn serve(mode: crate::ServeMode, repo: OsString) -> Result<()> {
     match mode {
         crate::ServeMode::Stdio => run_session(Connection::new(stdin(), stdout()), &repo),
         crate::ServeMode::Bind { addr } => serve_listener(TcpListener::bind(addr)?, repo),
+        crate::ServeMode::Http { addr } => serve_http(addr, repo),
         crate::ServeMode::Systemd => serve_systemd_listener(repo),
     }
 }

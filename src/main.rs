@@ -38,6 +38,8 @@ pub enum ServeMode {
     Stdio,
     /// Bind to a listening socket ourselves
     Bind { addr: SocketAddr },
+    /// Listen over HTTP
+    Http { addr: String },
     /// Get socket listener from systemd LISTEN_FDS
     Systemd,
 }
