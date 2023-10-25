@@ -78,7 +78,9 @@ enum Command {
         typ: AccountType,
         name: String,
     },
-    AccountShow { id: Id<Account> },
+    AccountShow {
+        id: Id<Account>,
+    },
     AccountModify(Id<Account>, Vec<AccountModification>),
     TransactionAdd {
         amount: Amount,
@@ -576,7 +578,16 @@ fn accounts_list(repo: &Repository) -> Result<()> {
 }
 
 fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
-    let Account { id, name, typ, current, enabled: _, notes: _ } = repo.account(account).ok_or_else(|| eyre!("No such account {account}"))?;
+    let Account {
+        id,
+        name,
+        typ,
+        current,
+        enabled: _,
+        notes: _,
+    } = repo
+        .account(account)
+        .ok_or_else(|| eyre!("No such account {account}"))?;
     let transactions = repo.transactions(id)?;
     println!("{name} ({typ}: {id})");
     println!("{current}");
@@ -587,11 +598,23 @@ fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
         .set_header(vec!["Amount", "Description", "Notes"]);
     for transaction in transactions {
         let moved = |src, dst| -> Result<_> {
-            let (direction, other) = if src == account { ("into", dst) } else { ("from", src) };
-            let name = repo.account(other).ok_or_else(|| eyre!("No such account {other}"))?.name;
+            let (direction, other) = if src == account {
+                ("into", dst)
+            } else {
+                ("from", src)
+            };
+            let name = repo
+                .account(other)
+                .ok_or_else(|| eyre!("No such account {other}"))?
+                .name;
             Ok(format!("Moved {direction} \"{name}\""))
         };
-        let Transaction { id: _, notes, amount, inner } = transaction;
+        let Transaction {
+            id: _,
+            notes,
+            amount,
+            inner,
+        } = transaction;
         let desc = match inner {
             TransactionInner::Received { src, .. } => format!("Received from {src}"),
             TransactionInner::Paid { dst, .. } => format!("Paid to {dst}"),
@@ -599,11 +622,7 @@ fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
             TransactionInner::MoveVirt { src, dst } => moved(src.erase(), dst.erase())?,
             TransactionInner::Convert { new_amount, .. } => format!("Converted into {new_amount}"),
         };
-        table.add_row(vec![
-            amount.to_string(),
-            desc,
-            notes
-        ]);
+        table.add_row(vec![amount.to_string(), desc, notes]);
     }
     println!("{table}");
     Ok(())

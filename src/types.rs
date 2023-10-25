@@ -386,11 +386,23 @@ impl Transaction {
 
     pub fn accounts(&self) -> [Id<Account>; 2] {
         match &self.inner {
-            TransactionInner::Received { src: _, dst, dst_virt } => [dst.erase(), dst_virt.erase()],
-            TransactionInner::Paid { src, src_virt, dst: _ } => [src.erase(), src_virt.erase()],
+            TransactionInner::Received {
+                src: _,
+                dst,
+                dst_virt,
+            } => [dst.erase(), dst_virt.erase()],
+            TransactionInner::Paid {
+                src,
+                src_virt,
+                dst: _,
+            } => [src.erase(), src_virt.erase()],
             TransactionInner::MovePhys { src, dst } => [src.erase(), dst.erase()],
             TransactionInner::MoveVirt { src, dst } => [src.erase(), dst.erase()],
-            TransactionInner::Convert { acc, acc_virt, new_amount: _ } => [acc.erase(), acc_virt.erase()],
+            TransactionInner::Convert {
+                acc,
+                acc_virt,
+                new_amount: _,
+            } => [acc.erase(), acc_virt.erase()],
         }
     }
 }

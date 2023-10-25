@@ -1,6 +1,12 @@
-use std::{fmt::Debug, net::{TcpStream, ToSocketAddrs}, path::{PathBuf, Path}, sync::Mutex, ffi::OsStr};
+use std::{
+    ffi::OsStr,
+    fmt::Debug,
+    net::{TcpStream, ToSocketAddrs},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
-use eyre::{Result, bail};
+use eyre::{bail, Result};
 use tracing::instrument;
 
 use crate::{command::*, types::*};
@@ -38,22 +44,25 @@ impl Repository {
             Some(("http" | "https", _)) => Self::open_http(addr.to_owned()),
             Some((proto, _)) => bail!("Unknown proto {proto}"),
         }
-        
     }
 
     fn open_local(path: &Path) -> Result<Self> {
-        Ok(Self(RepositoryInner::Local(LocalRepository::open(path.to_owned())?)))
+        Ok(Self(RepositoryInner::Local(LocalRepository::open(
+            path.to_owned(),
+        )?)))
     }
 
     fn open_tcp(s: impl ToSocketAddrs) -> Result<Self> {
         let stream = TcpStream::connect(s)?;
-        Ok(Self(RepositoryInner::Remote(Mutex::new(RemoteRepository::open_tcp(
-            stream
-        )?))))
+        Ok(Self(RepositoryInner::Remote(Mutex::new(
+            RemoteRepository::open_tcp(stream)?,
+        ))))
     }
 
     fn open_http(s: String) -> Result<Self> {
-        Ok(Self(RepositoryInner::Remote(Mutex::new(RemoteRepository::open_http(s)?))))
+        Ok(Self(RepositoryInner::Remote(Mutex::new(
+            RemoteRepository::open_http(s)?,
+        ))))
     }
 
     pub fn run_command(&mut self, cmd: Command) -> Result<()> {
@@ -84,4 +93,3 @@ impl Repository {
         }
     }
 }
-

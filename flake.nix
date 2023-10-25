@@ -70,7 +70,10 @@
           wrapProgram $out/bin/monfari --prefix PATH : ${pkgs.git}/bin
         '';
         nativeBuildInputs = [pkgs.makeBinaryWrapper];
-        buildInputs = if system == "aarch64-darwin" then with pkgs.darwin.apple_sdk.frameworks; [ Security ] else [];
+        buildInputs =
+          if system == "aarch64-darwin"
+          then with pkgs.darwin.apple_sdk.frameworks; [Security]
+          else [];
         inherit src cargoArtifacts;
       };
       default = ownPkgs.monfari;
@@ -106,40 +109,46 @@
       };
       default = monfari;
     });
-    nixosModules.monfari = { lib, pkgs, config, ... }: with lib; let
-      cfg = config.services.bluepython508.monfari;
-    in {
-      options.services.bluepython508.monfari = {
-        enable = mkEnableOption "monfari server";
-        address = mkOption {
-          type = types.str;
-        };
-      };
-      config.systemd = mkIf cfg.enable { 
-        services.monfari = {
-          description = "Monfari";
-          environment = {
-            MONFARI_REPO = "path:/var/lib/monfari";
-            RUST_BACKTRACE = "1";
-            RUST_SPANTRACE = "1";
-            RUST_LOG = "debug";
-            GIT_AUTHOR_NAME = "User";
-            GIT_AUTHOR_EMAIL = "user@example.org";
-            GIT_COMMITTER_NAME = "User";
-            GIT_COMMITTER_EMAIL = "user@example.org";
-          };
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig = {
-            ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
-            ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve http ${cfg.address}";
-            ExecStop = "${lib.getExe pkgs.curl} -XPOST http://${cfg.address}/__stop__";
-            DynamicUser = true;
-            ProtectHome = true;
-            PrivateUsers = true;
-            StateDirectory = "monfari";
+    nixosModules.monfari = {
+      lib,
+      pkgs,
+      config,
+      ...
+    }:
+      with lib; let
+        cfg = config.services.bluepython508.monfari;
+      in {
+        options.services.bluepython508.monfari = {
+          enable = mkEnableOption "monfari server";
+          address = mkOption {
+            type = types.str;
           };
         };
+        config.systemd = mkIf cfg.enable {
+          services.monfari = {
+            description = "Monfari";
+            environment = {
+              MONFARI_REPO = "path:/var/lib/monfari";
+              RUST_BACKTRACE = "1";
+              RUST_SPANTRACE = "1";
+              RUST_LOG = "debug";
+              GIT_AUTHOR_NAME = "User";
+              GIT_AUTHOR_EMAIL = "user@example.org";
+              GIT_COMMITTER_NAME = "User";
+              GIT_COMMITTER_EMAIL = "user@example.org";
+            };
+            wantedBy = ["multi-user.target"];
+            serviceConfig = {
+              ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
+              ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve http ${cfg.address}";
+              ExecStop = "${lib.getExe pkgs.curl} -XPOST http://${cfg.address}/__stop__";
+              DynamicUser = true;
+              ProtectHome = true;
+              PrivateUsers = true;
+              StateDirectory = "monfari";
+            };
+          };
+        };
       };
-    };
   };
 }

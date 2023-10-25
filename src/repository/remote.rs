@@ -125,7 +125,7 @@ impl RemoteHandle {
             Self::Http { agent, base_url } => Ok(agent
                 .get(&format!("{base_url}/transactions/{account}"))
                 .call()?
-                .into_json()?)
+                .into_json()?),
         }
     }
 }
@@ -212,7 +212,7 @@ mod systemd {
             .family()
             .is_some_and(|f| matches!(f, Inet | Inet6)))
     }
-    
+
     #[instrument]
     pub fn serve_systemd_listener(repo: OsString) -> Result<()> {
         ensure!(
@@ -265,7 +265,10 @@ async fn serve_http(addr: String, repo: OsString) -> Result<()> {
     };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let stop_tx = Arc::new(Mutex::new(Some(stop_tx)));
-    let stop = move || async move { stop_tx.lock().unwrap().take().unwrap().send(()).unwrap(); "" };
+    let stop = move || async move {
+        stop_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+        ""
+    };
     let app = Router::new()
         .route("/", get(account_list).post(run_command))
         .route("/transactions/:account", get(transaction_list))
@@ -274,7 +277,9 @@ async fn serve_http(addr: String, repo: OsString) -> Result<()> {
 
     axum::Server::bind(&addr.parse().unwrap())
         .serve(app.into_make_service())
-        .with_graceful_shutdown(async { stop_rx.await.ok(); })
+        .with_graceful_shutdown(async {
+            stop_rx.await.ok();
+        })
         .await?;
     Ok(())
 }
