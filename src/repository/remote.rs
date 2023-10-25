@@ -6,10 +6,10 @@ use std::{
     fmt::{self, Debug},
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
-    os::fd::FromRawFd,
     process,
     sync::{Arc, Mutex},
 };
+
 use tracing::{debug, instrument};
 
 use crate::command::Command;
@@ -200,37 +200,42 @@ fn serve_listener(listener: TcpListener, repo: OsString) -> Result<()> {
         run_session(connection, &repo)?;
     }
 }
+#[cfg(unix)]
+mod systemd {
+    use super::*;
+    use std::os::unix::io::FromRawFd;
 
-#[instrument]
-fn is_fd_inet_socket(fd: i32) -> Result<bool> {
-    use nix::sys::socket::{getsockname, AddressFamily::*, SockaddrLike, SockaddrStorage};
-    Ok(getsockname::<SockaddrStorage>(fd)?
-        .family()
-        .is_some_and(|f| matches!(f, Inet | Inet6)))
-}
-
-#[instrument]
-fn serve_systemd_listener(repo: OsString) -> Result<()> {
-    ensure!(
-        env::var("LISTEN_PID")?.parse::<u32>()? == process::id(),
-        "This process should not be listening for systemd sockets"
-    );
-    let n_fds = env::var("LISTEN_FDS")?.parse::<i32>()?;
-    let mut listeners = (3..3 + n_fds)
-        .map(|fd| {
-            ensure!(
-                is_fd_inet_socket(fd)?,
-                "Systemd-provided fd is not an inet socket!"
-            );
-            Ok(unsafe { TcpListener::from_raw_fd(fd) })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let Some(listener) = listeners.pop() else { bail!("One listener must be provided") };
-    ensure!(
-        listeners.is_empty(),
-        "More than one listener is not supported at present"
-    );
-    serve_listener(listener, repo)
+    #[instrument]
+    fn is_fd_inet_socket(fd: i32) -> Result<bool> {
+        use nix::sys::socket::{getsockname, AddressFamily::*, SockaddrLike, SockaddrStorage};
+        Ok(getsockname::<SockaddrStorage>(fd)?
+            .family()
+            .is_some_and(|f| matches!(f, Inet | Inet6)))
+    }
+    
+    #[instrument]
+    pub fn serve_systemd_listener(repo: OsString) -> Result<()> {
+        ensure!(
+            env::var("LISTEN_PID")?.parse::<u32>()? == process::id(),
+            "This process should not be listening for systemd sockets"
+        );
+        let n_fds = env::var("LISTEN_FDS")?.parse::<i32>()?;
+        let mut listeners = (3..3 + n_fds)
+            .map(|fd| {
+                ensure!(
+                    is_fd_inet_socket(fd)?,
+                    "Systemd-provided fd is not an inet socket!"
+                );
+                Ok(unsafe { TcpListener::from_raw_fd(fd) })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let Some(listener) = listeners.pop() else { bail!("One listener must be provided") };
+        ensure!(
+            listeners.is_empty(),
+            "More than one listener is not supported at present"
+        );
+        serve_listener(listener, repo)
+    }
 }
 
 #[tokio::main]
@@ -280,6 +285,7 @@ pub fn serve(mode: crate::ServeMode, repo: OsString) -> Result<()> {
         crate::ServeMode::Stdio => run_session(Connection::new(stdin(), stdout()), &repo),
         crate::ServeMode::Bind { addr } => serve_listener(TcpListener::bind(addr)?, repo),
         crate::ServeMode::Http { addr } => serve_http(addr, repo),
-        crate::ServeMode::Systemd => serve_systemd_listener(repo),
+        #[cfg(unix)]
+        crate::ServeMode::Systemd => systemd::serve_systemd_listener(repo),
     }
 }

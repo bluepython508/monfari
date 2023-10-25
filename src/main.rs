@@ -41,6 +41,7 @@ pub enum ServeMode {
     /// Listen over HTTP
     Http { addr: String },
     /// Get socket listener from systemd LISTEN_FDS
+    #[cfg(unix)]
     Systemd,
 }
 

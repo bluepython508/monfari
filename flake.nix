@@ -57,6 +57,7 @@
         }));
   in {
     packages = eachSystem ({
+      system,
       pkgs,
       toolchain,
       craneLib,
@@ -69,6 +70,7 @@
           wrapProgram $out/bin/monfari --prefix PATH : ${pkgs.git}/bin
         '';
         nativeBuildInputs = [pkgs.makeBinaryWrapper];
+        buildInputs = if system == "aarch64-darwin" then with pkgs.darwin.apple_sdk.frameworks; [ Security ] else [];
         inherit src cargoArtifacts;
       };
       default = ownPkgs.monfari;
@@ -80,7 +82,7 @@
     }: {
       default = pkgs.mkShell {
         inputsFrom = [ownPkgs.default];
-        packages = [toolchain pkgs.bacon pkgs.sqlx-cli pkgs.sqlite pkgs.cargo-expand];
+        packages = [toolchain pkgs.bacon];
       };
     });
     formatter = eachSystem ({treefmt}: treefmt.wrapper);
