@@ -168,17 +168,22 @@ impl LocalRepository {
         &mut self,
         id: Id<Account>,
         f: impl FnOnce(&mut Account) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<impl FnOnce(&mut Self) -> Result<()>> {
         let path = self.path_for(id);
-        let value = self
+        let mut value = self
             .accounts
-            .get_mut(&id)
-            .ok_or_else(|| eyre!("No such account {id}"))?;
-        f(value)?;
+            .get(&id)
+            .ok_or_else(|| eyre!("No such account {id}"))?
+            .clone();
+        f(&mut value)?;
         assert!(value.id == id);
-        fs::write(&path, toml::to_string_pretty(&value)?)?;
-        git!(in &self.path, "add", &path)?;
-        Ok(())
+        Ok(move |repo: &mut Self| {
+            let value_r = repo.accounts.get_mut(&id).unwrap();
+            *value_r = value;
+            fs::write(&path, toml::to_string_pretty(value_r)?)?;
+            git!(in &repo.path, "add", &path)?;
+            Ok(())
+        })
     }
 }
 
@@ -186,18 +191,26 @@ impl LocalRepository {
     #[instrument]
     fn add_transaction(&mut self, transaction: Transaction) -> Result<()> {
         self.create(&transaction)?;
-        for (acc, amounts) in &transaction.results().into_iter().group_by(|x| x.0) {
-            self.modify(acc, |acc| {
-                for amount in amounts {
-                    acc.current += amount.1;
-                }
-                ensure!(
-                    acc.current.0.values().all(|x| x.0 >= 0),
-                    "Account balance must never be below 0 in any currency"
-                );
-                Ok(())
-            })?;
-        }
+        transaction
+            .results()
+            .into_iter()
+            .group_by(|x| x.0)
+            .into_iter()
+            .map(|(acc, amounts)| {
+                self.modify(acc, |acc| {
+                    for amount in amounts {
+                        acc.current += amount.1;
+                    }
+                    ensure!(
+                        acc.current.0.values().all(|x| x.0 >= 0),
+                        "Account balance must never be below 0 in any currency"
+                    );
+                    Ok(())
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .try_for_each(|exec| exec(self))?;
         Ok(())
     }
 
@@ -229,7 +242,7 @@ impl LocalRepository {
                 }
             }
             Ok(())
-        })?;
+        })?(self)?;
         Ok(())
     }
 
