@@ -259,11 +259,14 @@ impl Display for Amounts {
 pub struct Physical;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Virtual;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tag;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum AccountType {
     Physical,
     Virtual,
+    Tag,
 }
 
 impl FromStr for AccountType {
@@ -272,6 +275,7 @@ impl FromStr for AccountType {
         match s.to_lowercase().as_str() {
             "physical" => Ok(Self::Physical),
             "virtual" => Ok(Self::Virtual),
+            "tag" => Ok(Self::Tag),
             _ => Err("No such account type"),
         }
     }
@@ -284,6 +288,7 @@ impl Display for AccountType {
             match self {
                 AccountType::Physical => "physical",
                 AccountType::Virtual => "virtual",
+                AccountType::Tag => "tag",
             }
         )
     }
@@ -301,12 +306,17 @@ pub struct Account<Type = AccountType> {
 
 impl From<Id<Account<Physical>>> for Id<Account> {
     fn from(x: Id<Account<Physical>>) -> Id<Account> {
-        x.erase().unerase()
+        x.erase()
     }
 }
 impl From<Id<Account<Virtual>>> for Id<Account> {
     fn from(x: Id<Account<Virtual>>) -> Id<Account> {
-        x.erase().unerase()
+        x.erase()
+    }
+}
+impl From<Id<Account<Tag>>> for Id<Account> {
+    fn from(x: Id<Account<Tag>>) -> Id<Account> {
+        x.erase()
     }
 }
 
@@ -331,6 +341,7 @@ pub enum TransactionInner {
         src: Id<Account<Physical>>,
         src_virt: Id<Account<Virtual>>,
         dst: String,
+        tag: Option<Id<Account<Tag>>>,
     },
     MovePhys {
         src: Id<Account<Physical>>,
@@ -365,8 +376,15 @@ impl Transaction {
             Paid {
                 src,
                 src_virt,
+                tag,
                 dst: _,
-            } => vec![(src.into(), -amount), (src_virt.into(), -amount)],
+            } => {
+                let mut results = vec![(src.into(), -amount), (src_virt.into(), -amount)];
+                if let Some(tag) = tag {
+                    results.push((tag.into(), amount))
+                }
+                results
+            }
             MovePhys { src, dst } => {
                 vec![(src.into(), -amount), (dst.into(), amount)]
             }
@@ -384,25 +402,32 @@ impl Transaction {
         }
     }
 
-    pub fn accounts(&self) -> [Id<Account>; 2] {
+    pub fn accounts(&self) -> Vec<Id<Account>> {
         match &self.inner {
             TransactionInner::Received {
                 src: _,
                 dst,
                 dst_virt,
-            } => [dst.erase(), dst_virt.erase()],
+            } => vec![dst.erase(), dst_virt.erase()],
             TransactionInner::Paid {
                 src,
                 src_virt,
+                tag,
                 dst: _,
-            } => [src.erase(), src_virt.erase()],
-            TransactionInner::MovePhys { src, dst } => [src.erase(), dst.erase()],
-            TransactionInner::MoveVirt { src, dst } => [src.erase(), dst.erase()],
+            } => {
+                let mut accounts = vec![src.erase(), src_virt.erase()];
+                if let Some(tag) = tag {
+                    accounts.push(tag.erase())
+                }
+                accounts
+            }
+            TransactionInner::MovePhys { src, dst } => vec![src.erase(), dst.erase()],
+            TransactionInner::MoveVirt { src, dst } => vec![src.erase(), dst.erase()],
             TransactionInner::Convert {
                 acc,
                 acc_virt,
                 new_amount: _,
-            } => [acc.erase(), acc_virt.erase()],
+            } => vec![acc.erase(), acc_virt.erase()],
         }
     }
 }

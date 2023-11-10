@@ -8,7 +8,7 @@ use crate::{
     command::{self, AccountModification},
     repository::Repository,
     types::{
-        Account, AccountType, Amount, Currency, Id, Physical, Transaction, TransactionInner,
+        Account, AccountType, Amount, Currency, Id, Physical, Tag, Transaction, TransactionInner,
         Virtual,
     },
 };
@@ -174,6 +174,7 @@ impl<'a> Parser<'a> {
         let typ = self.dispatch(&[
             ("physical", &|_| Ok(AccountType::Physical)),
             ("virtual", &|_| Ok(AccountType::Virtual)),
+            ("tag", &|_| Ok(AccountType::Tag)),
         ])?;
         let name = self.string()?;
         Ok(Command::AccountCreate { typ, name })
@@ -230,7 +231,13 @@ impl<'a> Parser<'a> {
         let src = self.account_phys()?;
         self.expect("src-virt")?;
         let src_virt = self.account_virt()?;
-        Ok(TransactionInner::Paid { src, dst, src_virt })
+        let tag = self.expect("tag").map(|_| self.account_tag()).ok().transpose()?;
+        Ok(TransactionInner::Paid {
+            src,
+            dst,
+            src_virt,
+            tag,
+        })
     }
 
     fn transaction_move_phys(&mut self) -> Result<TransactionInner, Completions> {
@@ -326,6 +333,10 @@ impl<'a> Parser<'a> {
             .map(|x| x.unerase())
     }
 
+    fn account_tag(&mut self) -> Result<Id<Account<Tag>>, Completions> {
+        self.account_id(Some(AccountType::Tag)).map(|x| x.unerase())
+    }
+
     fn expect(&mut self, x: &'static str) -> Result<(), Completions> {
         self.token(Some([x.to_string()].into_iter().collect()), |_, tok| {
             (tok == x).then_some((TokenType::Command, ()))
@@ -412,7 +423,7 @@ impl Highlighter for ReedlineCmd {
                 .map(|Token { str, typ, .. }| {
                     (
                         match typ {
-                            TokenType::Command => Color::Blue.dimmed(),
+                            TokenType::Command => Color::Cyan.normal(),
                             TokenType::String => Color::LightGreen.normal(),
                             TokenType::Id => Color::Green.dimmed(),
                             TokenType::Amount => Color::LightBlue.normal(),
