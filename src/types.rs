@@ -179,8 +179,8 @@ impl Display for Amount {
             f,
             "{}{} {}",
             self.0 / 100,
-            if self.0 % 100 != 0 {
-                format!(".{:02}", self.0 % 100)
+            if self.0.abs() % 100 != 0 {
+                format!(".{:02}", self.0.abs() % 100)
             } else {
                 "".to_owned()
             },
