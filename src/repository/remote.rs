@@ -251,7 +251,10 @@ async fn serve_http(addr: String, repo: OsString) -> Result<()> {
         move |extract::Json(command)| async move {
             debug!(?command, "run command");
             let mut repo = repo.lock().unwrap();
-            repo.run_command(command).map_err(|x| format!("{x}"))?;
+            repo.run_command(command).map_err(|e| {
+                tracing::error!(?e);
+                e.to_string()
+            })?;
             Ok::<_, String>(Json(repo.accounts()))
         }
     };
@@ -261,7 +264,10 @@ async fn serve_http(addr: String, repo: OsString) -> Result<()> {
             .unwrap()
             .transactions(account)
             .map(Json)
-            .map_err(|x| format!("{x}"))
+            .map_err(|e| {
+                tracing::error!(?e);
+                e.to_string()
+            })
     };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let stop_tx = Arc::new(Mutex::new(Some(stop_tx)));
