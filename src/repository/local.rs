@@ -202,7 +202,7 @@ impl LocalRepository {
                         acc.current += amount.1;
                     }
                     ensure!(
-                        acc.current.0.values().all(|x| x.0 >= 0),
+                        acc.typ == AccountType::Tag || acc.current.0.values().all(|x| x.0 >= 0),
                         "Account balance must never be below 0 in any currency"
                     );
                     Ok(())

@@ -221,7 +221,8 @@ impl<'a> Parser<'a> {
         let dst = self.account_phys()?;
         self.expect("dst-virt")?;
         let dst_virt = self.account_virt()?;
-        Ok(TransactionInner::Received { src, dst, dst_virt })
+        let tag = self.expect("tag").map(|_| self.account_tag()).ok().transpose()?;
+        Ok(TransactionInner::Received { src, dst, dst_virt, tag })
     }
 
     fn transaction_paid(&mut self) -> Result<TransactionInner, Completions> {

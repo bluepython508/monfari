@@ -336,6 +336,7 @@ pub enum TransactionInner {
         src: String,
         dst: Id<Account<Physical>>,
         dst_virt: Id<Account<Virtual>>,
+        tag: Option<Id<Account<Tag>>>,
     },
     Paid {
         src: Id<Account<Physical>>,
@@ -370,8 +371,13 @@ impl Transaction {
                 src: _,
                 dst,
                 dst_virt,
+                tag
             } => {
-                vec![(dst.into(), amount), (dst_virt.into(), amount)]
+                let mut results = vec![(dst.into(), amount), (dst_virt.into(), amount)];
+                if let Some(tag) = tag {
+                    results.push((tag.into(), -amount))
+                }
+                results
             }
             Paid {
                 src,
@@ -408,7 +414,14 @@ impl Transaction {
                 src: _,
                 dst,
                 dst_virt,
-            } => vec![dst.erase(), dst_virt.erase()],
+                tag
+            } => {
+                let mut accounts = vec![dst.erase(), dst_virt.erase()];
+                if let Some(tag) = tag {
+                    accounts.push(tag.erase())
+                }
+                accounts
+            },
             TransactionInner::Paid {
                 src,
                 src_virt,
