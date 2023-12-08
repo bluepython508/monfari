@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO commands VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0fb55f75c6f773ad4e9f8f5c81e943f17a4038ad990d61a8553a0431fddb73d2"
+}

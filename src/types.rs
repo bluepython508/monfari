@@ -7,6 +7,7 @@ use std::{
 };
 
 use clap::ValueEnum;
+use eyre::Result;
 use ulid::Ulid;
 
 use serde::{de::Error, Deserialize, Serialize};
@@ -80,14 +81,11 @@ impl<T> Display for Id<T> {
 }
 
 impl<T> FromStr for Id<T> {
-    type Err = &'static str;
+    type Err = eyre::Report;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         use proqnt::FromProquints;
-        u128::parse_proquints(s)
-            .map(From::from)
-            .map(Self::new)
-            .map_err(|_| "Invalid proquint")
+        Ok(Self::new(u128::parse_proquints(s)?.into()))
     }
 }
 
@@ -124,16 +122,16 @@ impl Display for Currency {
     }
 }
 impl FromStr for Currency {
-    type Err = &'static str;
+    type Err = eyre::Report;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let c: [char; 3] = s
             .chars()
             .collect::<Vec<_>>()
             .try_into()
-            .map_err(|_| "Requires exactly 3 upper-case chars")?;
+            .map_err(|_| eyre::eyre!("Requires exactly 3 upper-case chars"))?;
         if !c.iter().all(|x| x.is_ascii_uppercase()) {
-            return Err("Requires exactly 3 upper-case chars");
+            eyre::bail!("Requires exactly 3 upper-case chars");
         }
         Ok(Self(c))
     }
@@ -189,12 +187,15 @@ impl Display for Amount {
     }
 }
 impl FromStr for Amount {
-    type Err = &'static str;
+    type Err = eyre::Report;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let e = "Amounts of currency are formatted as XXXX.XX CCC";
-        let (amount, currency) = s.split_once(' ').ok_or(e)?;
-        Ok(Self(Self::parse_num(amount).ok_or(e)?, currency.parse()?))
+        let e = || eyre::eyre!("Amounts of currency are formatted as XXXX.XX CCC");
+        let (amount, currency) = s.split_once(' ').ok_or_else(e)?;
+        Ok(Self(
+            Self::parse_num(amount).ok_or_else(e)?,
+            currency.parse()?,
+        ))
     }
 }
 
@@ -244,6 +245,15 @@ impl AddAssign<Amount> for Amounts {
     }
 }
 
+impl std::iter::Sum<Amount> for Amounts {
+    fn sum<I: Iterator<Item = Amount>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut acc, am| {
+            acc += am;
+            acc
+        })
+    }
+}
+
 impl Display for Amounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -260,7 +270,7 @@ pub struct Physical;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Virtual;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, sqlx::Type)]
 pub enum AccountType {
     Physical,
     Virtual,

@@ -37,7 +37,7 @@
           ownPkgs = self.packages.${system};
           toolchain = pkgs.rust-bin.fromRustupToolchainFile ./toolchain.toml;
           craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
-          src = craneLib.cleanCargoSource (craneLib.path ./.);
+          src = ./.;
           cargoArtifacts = craneLib.buildDepsOnly {
             inherit src;
           };
@@ -71,9 +71,8 @@
         '';
         nativeBuildInputs = [pkgs.makeBinaryWrapper];
         buildInputs =
-          if system == "aarch64-darwin"
-          then with pkgs.darwin.apple_sdk.frameworks; [Security]
-          else [];
+          [pkgs.sqlite pkgs.sqlx-cli]
+          ++ lib.optional (pkgs.system == "aarch64-darwin") pkgs.darwin.apple_sdk.frameworks.Security;
         inherit src cargoArtifacts;
       };
       default = ownPkgs.monfari;
@@ -85,7 +84,7 @@
     }: {
       default = pkgs.mkShell {
         inputsFrom = [ownPkgs.default];
-        packages = [toolchain pkgs.bacon];
+        packages = [toolchain pkgs.bacon pkgs.sqlite];
       };
     });
     formatter = eachSystem ({treefmt}: treefmt.wrapper);

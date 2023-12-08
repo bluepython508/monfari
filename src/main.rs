@@ -3,6 +3,7 @@ mod repl;
 mod repository;
 mod types;
 
+use std::collections::BTreeMap;
 use std::{env, io, net::SocketAddr, path::PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -30,6 +31,8 @@ enum Command {
     Run {
         args: Vec<String>,
     },
+    Export,
+    Import,
 }
 
 #[derive(Subcommand, Debug)]
@@ -45,7 +48,8 @@ pub enum ServeMode {
     Systemd,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     color_eyre::install()?;
     tracing::subscriber::set_global_default(
         registry()
@@ -66,7 +70,7 @@ fn main() -> Result<()> {
             Repository::init(path)?;
         }
         None => {
-            repl::repl(Repository::open(&repo)?)?;
+            repl::repl(Repository::open(&repo).await?).await?;
         }
         Some(Command::Run { mut args }) => {
             for arg in &mut args {
@@ -74,10 +78,42 @@ fn main() -> Result<()> {
                     *arg = format!("\"{}\"", arg);
                 }
             }
-            repl::command(Repository::open(&repo)?, args.join(" "))?;
+            repl::command(Repository::open(&repo).await?, args.join(" ")).await?;
         }
         Some(Command::Serve { mode }) => {
-            repository::serve(mode, repo)?;
+            repository::serve(mode, repo).await?;
+        }
+        Some(Command::Export) => {
+            let repo = Repository::open(&repo).await?;
+            let accounts = repo.accounts().await?;
+            let mut transactions = BTreeMap::default();
+            for account in &accounts {
+                transactions.extend(
+                    repo.transactions(account.id)
+                        .await?
+                        .into_iter()
+                        .map(|x| (x.id, command::Command::AddTransaction(x))),
+                );
+            }
+            println!(
+                "{}",
+                serde_json::to_string(
+                    &accounts
+                        .into_iter()
+                        .map(|mut acc| {
+                            acc.current = Default::default();
+                            command::Command::CreateAccount(acc)
+                        })
+                        .chain(transactions.into_values())
+                        .collect::<Vec<_>>()
+                )?
+            )
+        }
+        Some(Command::Import) => {
+            let mut repo = Repository::open(&repo).await?;
+            for command in serde_json::from_reader::<_, Vec<command::Command>>(io::stdin())? {
+                repo.run_command(command).await?;
+            }
         }
     }
 
