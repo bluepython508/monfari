@@ -127,18 +127,13 @@
           services.monfari = {
             description = "Monfari";
             environment = {
-              MONFARI_REPO = "path:/var/lib/monfari";
+              MONFARI_REPO = "sqlite:/var/lib/monfari/db.sqlite";
               RUST_BACKTRACE = "1";
               RUST_SPANTRACE = "1";
               RUST_LOG = "debug";
-              GIT_AUTHOR_NAME = "User";
-              GIT_AUTHOR_EMAIL = "user@example.org";
-              GIT_COMMITTER_NAME = "User";
-              GIT_COMMITTER_EMAIL = "user@example.org";
             };
             wantedBy = ["multi-user.target"];
             serviceConfig = {
-              ExecStartPre = ["-${self.packages.${pkgs.system}.monfari}/bin/monfari init /var/lib/monfari"];
               ExecStart = "${self.packages.${pkgs.system}.monfari}/bin/monfari serve http ${cfg.address}";
               ExecStop = "${lib.getExe pkgs.curl} -XPOST http://${cfg.address}/__stop__";
               DynamicUser = true;
