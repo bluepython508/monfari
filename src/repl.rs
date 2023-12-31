@@ -371,13 +371,7 @@ impl<'a> Parser<'a> {
 struct ReedlineCmd(Arc<RwLock<Vec<Account>>>);
 impl ReedlineCmd {
     fn parse(&self, line: &str) -> (Vec<Token>, Result<Command, Completions>) {
-        Parser::parse(
-            line,
-            self.0
-                .read()
-                .unwrap()
-                .clone(),
-        )
+        Parser::parse(line, self.0.read().unwrap().clone())
     }
 }
 impl Completer for ReedlineCmd {
@@ -436,8 +430,8 @@ impl Validator for ReedlineCmd {
     }
 }
 
-pub async fn repl(mut repo: Repository) -> Result<Repository> {
-    let custom = ReedlineCmd(Arc::new(RwLock::new(repo.accounts().await?)));
+pub fn repl(mut repo: Repository) -> Result<Repository> {
+    let custom = ReedlineCmd(Arc::new(RwLock::new(repo.accounts()?)));
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
@@ -463,7 +457,7 @@ pub async fn repl(mut repo: Repository) -> Result<Repository> {
     loop {
         match line_editor.read_line(&prompt)? {
             Signal::Success(line) => {
-                if let Err(e) = run_command(&mut repo, &custom, line).await {
+                if let Err(e) = run_command(&mut repo, &custom, line) {
                     eprintln!("{e}");
                 }
             }
@@ -474,31 +468,31 @@ pub async fn repl(mut repo: Repository) -> Result<Repository> {
     Ok(repo)
 }
 
-pub async fn command(mut repo: Repository, cmd: String) -> Result<Repository> {
-    let custom = ReedlineCmd(Arc::new(RwLock::new(repo.accounts().await?)));
-    run_command(&mut repo, &custom, cmd).await?;
+pub fn command(mut repo: Repository, cmd: String) -> Result<Repository> {
+    let custom = ReedlineCmd(Arc::new(RwLock::new(repo.accounts()?)));
+    run_command(&mut repo, &custom, cmd)?;
     Ok(repo)
 }
 
 #[allow(clippy::await_holding_lock)]
-async fn run_command(repo: &mut Repository, custom: &ReedlineCmd, cmd: String) -> Result<()> {
+fn run_command(repo: &mut Repository, custom: &ReedlineCmd, cmd: String) -> Result<()> {
     let cmd = custom
         .parse(&cmd)
         .1
         .map_err(|_| eyre!("Invalid Command: {}", cmd))?;
     match cmd {
-        Command::AccountsList => accounts_list(repo).await?,
-        Command::AccountCreate { typ, name } => account_create(repo, typ, name).await?,
-        Command::AccountShow { id } => account_show(repo, id).await?,
-        Command::AccountModify(id, mods) => account_modify(repo, id, mods).await?,
-        Command::TransactionAdd { amount, inner } => transaction(repo, amount, inner).await?,
+        Command::AccountsList => accounts_list(repo)?,
+        Command::AccountCreate { typ, name } => account_create(repo, typ, name)?,
+        Command::AccountShow { id } => account_show(repo, id)?,
+        Command::AccountModify(id, mods) => account_modify(repo, id, mods)?,
+        Command::TransactionAdd { amount, inner } => transaction(repo, amount, inner)?,
     };
-    *custom.0.write().unwrap() = repo.accounts().await?;
+    *custom.0.write().unwrap() = repo.accounts()?;
     Ok(())
 }
 
 #[instrument]
-async fn transaction(repo: &mut Repository, amount: Amount, inner: TransactionInner) -> Result<()> {
+fn transaction(repo: &mut Repository, amount: Amount, inner: TransactionInner) -> Result<()> {
     let notes = edit::edit("# Notes")?
         .lines()
         .filter(|x| !x.starts_with('#'))
@@ -509,25 +503,23 @@ async fn transaction(repo: &mut Repository, amount: Amount, inner: TransactionIn
         notes,
         amount,
         inner,
-    }))
-    .await?;
+    }))?;
     println!("Added transaction {}", id);
     Ok(())
 }
 
 #[instrument]
-async fn account_modify(
+fn account_modify(
     repo: &mut Repository,
     id: Id<Account>,
     mods: Vec<AccountModification>,
 ) -> Result<()> {
-    repo.run_command(command::Command::UpdateAccount(id, mods))
-        .await?;
+    repo.run_command(command::Command::UpdateAccount(id, mods))?;
     Ok(())
 }
 
 #[instrument]
-async fn account_create(repo: &mut Repository, typ: AccountType, name: String) -> Result<()> {
+fn account_create(repo: &mut Repository, typ: AccountType, name: String) -> Result<()> {
     let notes = edit::edit("# Notes")?
         .lines()
         .filter(|x| !x.starts_with('#'))
@@ -540,14 +532,13 @@ async fn account_create(repo: &mut Repository, typ: AccountType, name: String) -
         typ,
         current: Default::default(),
         enabled: true,
-    }))
-    .await?;
+    }))?;
     println!("Created account \"{}\" ({})", name, id);
     Ok(())
 }
 
 #[instrument]
-async fn accounts_list(repo: &Repository) -> Result<()> {
+fn accounts_list(repo: &Repository) -> Result<()> {
     use comfy_table::*;
     let mut table = Table::new();
     table
@@ -557,7 +548,7 @@ async fn accounts_list(repo: &Repository) -> Result<()> {
         .column_mut(0)
         .expect("Column 0 exists")
         .set_delimiter('-');
-    for account in repo.accounts().await? {
+    for account in repo.accounts()? {
         let Account {
             id,
             name,
@@ -578,7 +569,7 @@ async fn accounts_list(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
-async fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
+fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
     let Account {
         id,
         name,
@@ -586,8 +577,8 @@ async fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
         current,
         enabled: _,
         notes: _,
-    } = repo.account(account).await?;
-    let transactions = repo.transactions(id).await?;
+    } = repo.account(account)?;
+    let transactions = repo.transactions(id)?;
     println!("{name} ({typ}: {id})");
     println!("{current}");
     use comfy_table::*;
@@ -596,13 +587,13 @@ async fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec!["Amount", "Description", "Notes"]);
     for transaction in transactions {
-        let moved = |src, dst| async move {
+        let moved = |src, dst| {
             let (direction, other) = if src == account {
                 ("into", dst)
             } else {
                 ("from", src)
             };
-            let name = repo.account(other).await?.name;
+            let name = repo.account(other)?.name;
             Ok::<_, eyre::Report>(format!("Moved {direction} \"{name}\""))
         };
         let Transaction {
@@ -614,8 +605,8 @@ async fn account_show(repo: &Repository, account: Id<Account>) -> Result<()> {
         let desc = match inner {
             TransactionInner::Received { src, .. } => format!("Received from {src}"),
             TransactionInner::Paid { dst, .. } => format!("Paid to {dst}"),
-            TransactionInner::MovePhys { src, dst } => moved(src.erase(), dst.erase()).await?,
-            TransactionInner::MoveVirt { src, dst } => moved(src.erase(), dst.erase()).await?,
+            TransactionInner::MovePhys { src, dst } => moved(src.erase(), dst.erase())?,
+            TransactionInner::MoveVirt { src, dst } => moved(src.erase(), dst.erase())?,
             TransactionInner::Convert { new_amount, .. } => format!("Converted into {new_amount}"),
         };
         table.add_row(vec![amount.to_string(), desc, notes]);

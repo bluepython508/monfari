@@ -276,6 +276,7 @@ impl LocalRepository {
 
     #[instrument]
     pub(super) fn transactions(&self, id: Id<Account>) -> Result<Vec<Transaction>> {
+        ensure!(self.account(id).is_some(), "No such account {id}");
         self.list::<Transaction>()?
             .into_iter()
             .map(|x| self.get(x))

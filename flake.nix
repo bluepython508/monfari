@@ -71,7 +71,7 @@
         '';
         nativeBuildInputs = [pkgs.makeBinaryWrapper];
         buildInputs =
-          [pkgs.sqlite pkgs.sqlx-cli]
+          [pkgs.sqlite]
           ++ lib.optional (pkgs.system == "aarch64-darwin") pkgs.darwin.apple_sdk.frameworks.Security;
         inherit src cargoArtifacts;
       };

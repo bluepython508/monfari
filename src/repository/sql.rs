@@ -1,45 +1,49 @@
-#![allow(unused)]
+use std::{fmt::Display, str::FromStr};
+
 use crate::{
     command::{AccountModification, Command},
     types::{Account, AccountType, Amount, Id, Transaction, TransactionInner},
 };
-use eyre::Result;
-use sqlx::{query, query_as, SqlitePool};
+use exemplar::Model;
+use eyre::{Result, bail};
+use rusqlite::{
+    params, params_from_iter,
+    types::{FromSql, FromSqlError},
+    Connection, ToSql,
+};
+use rusqlite_migration::{Migrations, M};
 use tracing::instrument;
 
 #[derive(Debug)]
 pub(super) struct SqlRepository {
-    db: SqlitePool,
+    db: Connection,
 }
 
-macro_rules! impl_type {
-    ($(<$($typaram:ident),*> $ty:ty);+ $(;)?) => {
+macro_rules! to_from_sql {
+    ($($t:ident$(<$($arg:ident),+>)?;)*) => {
         $(
-            impl<'a, DB: sqlx::Database, $($typaram),*> sqlx::Decode<'a, DB> for $ty where &'a str: sqlx::Decode<'a, DB> {
-                fn decode(value: <DB as sqlx::database::HasValueRef<'a>>::ValueRef) -> Result<Self, sqlx::error::BoxDynError> {
-                    Ok(<&'a str as sqlx::Decode<'a, DB>>::decode(value)?.parse()?)
+            impl$(<$($arg),+>)? FromSql for $t$(<$($arg),+>)? {
+                fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+                    value.as_str()?.parse::<Self>().map_err(|err| FromSqlError::Other(err.into()))
                 }
             }
-            impl<'a, DB: sqlx::Database, $($typaram),*> sqlx::Encode<'a, DB> for $ty where String: sqlx::Encode<'a, DB> {
-                fn encode_by_ref(&self, buf: &mut <DB as sqlx::database::HasArguments<'a>>::ArgumentBuffer) -> sqlx::encode::IsNull {
-                    self.to_string().encode(buf)
+            impl$(<$($arg),+>)? ToSql for $t$(<$($arg),+>)? {
+                fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+                    Ok(self.to_string().into())
                 }
             }
-            impl<DB: sqlx::Database, $($typaram),*> sqlx::Type<DB> for $ty where String: sqlx::Type<DB> {
-                fn type_info() -> DB::TypeInfo {
-                    String::type_info()
-                }
-            }
-        )+
+        )*
     }
 }
 
-impl_type! {
-    <T> Id<T>;
-    <> Amount;
+to_from_sql! {
+    Id<T>;
+    Amount;
+    AccountType;
+    TransactionType;
 }
 
-#[derive(Debug, Eq, PartialEq, sqlx::Type, Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 enum TransactionType {
     Received,
     Paid,
@@ -48,11 +52,40 @@ enum TransactionType {
     Convert,
 }
 
-#[derive(Debug)]
+impl Display for TransactionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransactionType::Received => "Received",
+            TransactionType::Paid => "Paid",
+            TransactionType::MovePhys => "MovePhys",
+            TransactionType::MoveVirt => "MoveVirt",
+            TransactionType::Convert => "Convert",
+        }.fmt(f)
+    }
+}
+
+impl FromStr for TransactionType {
+    type Err = eyre::Report;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "Received" => Self::Received,
+            "Paid" => Self::Paid,
+            "MovePhys" => Self::MovePhys,
+            "MoveVirt" => Self::MoveVirt,
+            "Convert" => Self::Convert,
+            s => bail!("Invalid transaction_type {s}")
+        })
+    }
+}
+
+#[derive(Debug, Model)]
+#[table("transactions")]
 struct TransactionDb {
     id: Id<Transaction>,
     amount: Amount,
-    r#type: TransactionType,
+    #[column("type")]
+    typ: TransactionType,
     new_amount: Option<Amount>,
     external_party: Option<String>,
     acc_1: Id<Account>,
@@ -66,7 +99,7 @@ impl TransactionDb {
         let TransactionDb {
             id,
             amount,
-            r#type,
+            typ,
             new_amount,
             external_party,
             acc_1,
@@ -77,7 +110,7 @@ impl TransactionDb {
             id,
             notes,
             amount,
-            inner: match r#type {
+            inner: match typ {
                 TransactionType::Received => TransactionInner::Received {
                     src: external_party.ok_or_else(|| {
                         eyre::eyre!("`external_party` is required for `received` transactions")
@@ -112,10 +145,12 @@ impl TransactionDb {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Model)]
+#[table("accounts")]
 struct AccountDb {
     id: Id<Account>,
-    r#type: AccountType,
+    #[column("type")]
+    typ: AccountType,
     name: String,
     notes: String,
     enabled: bool,
@@ -129,7 +164,7 @@ impl AccountDb {
     ) -> Result<Account> {
         let AccountDb {
             id,
-            r#type,
+            typ,
             name,
             notes,
             enabled,
@@ -147,113 +182,131 @@ impl AccountDb {
             id,
             name,
             notes,
-            typ: r#type,
+            typ,
             current,
             enabled,
         })
     }
 }
 
+const MIGRATIONS: &[M] = &[M::up(
+    r#"
+        CREATE TABLE accounts (
+        	id TEXT NOT NULL PRIMARY KEY,
+        	type TEXT NOT NULL,
+        	name TEXT NOT NULL,
+        	notes TEXT NOT NULL DEFAULT '',
+        	enabled INT NOT NULL DEFAULT TRUE
+        ) STRICT;
+
+        CREATE TABLE transactions (
+        	id TEXT NOT NULL PRIMARY KEY,
+        	amount TEXT NOT NULL,
+        	type TEXT NOT NULL, -- Received, Paid, MovePhys, MoveVirt, Convert
+        	new_amount TEXT, -- Convert only
+        	external_party TEXT, -- src ordst for received and paid respectively
+        	acc_1 TEXT NOT NULL REFERENCES accounts (id), -- phys acc for {,_virt} types, src for moves
+        	acc_2 TEXT NOT NULL REFERENCES accounts (id), -- virt acc for {,_virt} types, dst for moves
+        	notes TEXT NOT NULL DEFAULT ''
+        ) STRICT;
+
+        CREATE TABLE commands (
+        	id TEXT NOT NULL PRIMARY KEY,
+        	command TEXT NOT NULL
+        ) STRICT;
+    "#,
+)];
+
 impl SqlRepository {
     #[instrument]
-    pub async fn open(f: &str) -> Result<Self> {
-        let db = SqlitePool::connect(&format!("sqlite:{f}?mode=rwc")).await?;
-        sqlx::migrate!().run(&db).await?;
+    pub fn open(f: &str) -> Result<Self> {
+        let mut db = Connection::open(f)?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
 
-        Ok(Self {
-           db,
-        })
+        MIGRATIONS
+            .iter()
+            .cloned()
+            .collect::<Migrations>()
+            .to_latest(&mut db)?;
+
+        Ok(Self { db })
     }
 }
 
 impl SqlRepository {
     #[instrument]
-    pub async fn transactions(&self, id: Id<Account>) -> Result<Vec<Transaction>> {
-        query_as!(
-            TransactionDb,
-            r#"
+    pub fn transactions(&self, id: Id<Account>) -> Result<Vec<Transaction>> {
+        self.db
+            .prepare(
+                r#"
             SELECT
-                id as "id: _", 
-                amount as "amount: _",
-                type as "type: _",
-                new_amount as "new_amount?: _",
+                id, 
+                amount,
+                type,
+                new_amount,
                 external_party,
-                acc_1 as "acc_1: _",
-                acc_2 as "acc_2: _",
+                acc_1,
+                acc_2,
                 notes
             FROM transactions
             WHERE acc_1 = ?1 OR acc_2 = ?1
         "#,
-            id
-        )
-        .fetch_all(&self.db)
-        .await?
-        .into_iter()
-        .map(TransactionDb::to_transaction)
-        .collect()
-    }
-
-    #[instrument]
-    pub async fn account(&self, id: Id<Account>) -> Result<Account> {
-        let transactions = self.transactions(id).await?;
-        query_as!(
-            AccountDb,
-            r#"
-                SELECT
-                    id as "id: _",
-                    type as "type: _",
-                    name,
-                    notes,
-                    enabled as "enabled: _"
-                FROM accounts
-                WHERE id = ?
-            "#,
-            id
-        )
-        .fetch_optional(&self.db)
-        .await?
-        .ok_or_else(|| eyre::eyre!("No such account"))?
-        .to_account(&transactions[..])
-    }
-
-    #[instrument]
-    pub async fn accounts(&self) -> Result<Vec<Account>> {
-        let accounts = query_as!(
-            AccountDb,
-            r#"
-                SELECT
-                    id as "id: _",
-                    type as "type: _",
-                    name,
-                    notes,
-                    enabled as "enabled: _"
-                FROM accounts
-            "#,
-        )
-        .fetch_all(&self.db)
-        .await?
-        .into_iter()
-        .map(|acc| async move {
-            let transactions = self.transactions(acc.id).await?;
-            acc.to_account(&transactions)
-        })
-        .collect::<Vec<_>>();
-        futures::future::join_all(accounts)
-            .await
-            .into_iter()
+            )?
+            .query_and_then(params![id], TransactionDb::from_row)?
+            .map(|x| x?.to_transaction())
             .collect()
     }
 
     #[instrument]
-    pub async fn run_command(&self, cmd: Command) -> Result<()> {
-        let mut transaction = self.db.begin().await?;
+    pub fn account(&self, id: Id<Account>) -> Result<Account> {
+        let transactions = self.transactions(id)?;
+        self.db
+            .query_row(
+                r#"
+                SELECT
+                    id,
+                    type,
+                    name,
+                    notes,
+                    enabled
+                FROM accounts
+                WHERE id = ?
+            "#,
+                params![id],
+                AccountDb::from_row,
+            )?
+            .to_account(&transactions)
+    }
+
+    #[instrument]
+    pub fn accounts(&self) -> Result<Vec<Account>> {
+        self.db
+            .prepare(
+                r#"
+                SELECT
+                    id,
+                    type,
+                    name,
+                    notes,
+                    enabled
+                FROM accounts
+            "#,
+            )?
+            .query_and_then(params![], AccountDb::from_row)?
+            .map(|acc| {
+                let acc = acc?;
+                let transactions = self.transactions(acc.id)?;
+                acc.to_account(&transactions)
+            })
+            .collect()
+    }
+    pub fn run_command(&mut self, cmd: Command) -> Result<()> {
+        let transaction = self.db.transaction()?;
 
         {
             let id = Id::<Command>::generate();
             let cmd = serde_json::to_string(&cmd)?;
-            query!("INSERT INTO commands VALUES (?, ?)", id, cmd)
-                .execute(&mut *transaction)
-                .await?;
+            transaction.execute("INSERT INTO commands VALUES (?, ?)", params![id, cmd])?;
         };
         match cmd {
             Command::CreateAccount(Account {
@@ -264,37 +317,38 @@ impl SqlRepository {
                 enabled,
                 current: _,
             }) => {
-                query!(
-                    "INSERT INTO accounts(id, name, notes, type, enabled) VALUES (?, ?, ?, ?, ?)",
+                AccountDb {
                     id,
                     name,
                     notes,
                     typ,
-                    enabled
-                )
-                .execute(&mut *transaction)
-                .await?;
+                    enabled,
+                }
+                .insert(&transaction)?;
             }
             Command::UpdateAccount(acc, changes) => {
-                for change in changes {
-                    match change {
+                let (columns, mut values) = changes
+                    .into_iter()
+                    .map(|x| match x {
                         AccountModification::Disable => {
-                            query!("UPDATE accounts SET enabled = false WHERE id = ?", acc)
-                                .execute(&mut *transaction)
-                                .await?;
+                            ("enabled", Box::new(false) as Box<dyn ToSql>)
                         }
-                        AccountModification::UpdateName(name) => {
-                            query!("UPDATE accounts SET name = ? WHERE id = ?", name, acc)
-                                .execute(&mut *transaction)
-                                .await?;
-                        }
-                        AccountModification::UpdateNotes(notes) => {
-                            query!("UPDATE accounts SET notes = ? WHERE id = ?", notes, acc)
-                                .execute(&mut *transaction)
-                                .await?;
-                        }
-                    }
-                }
+                        AccountModification::UpdateName(name) => ("name", Box::new(name) as _),
+                        AccountModification::UpdateNotes(notes) => ("notes", Box::new(notes) as _),
+                    })
+                    .unzip::<_, _, Vec<_>, Vec<_>>();
+                values.push(Box::new(acc) as _);
+                transaction.execute(
+                    &format!(
+                        "UPDATE accounts SET {} WHERE id = ?",
+                        columns
+                            .into_iter()
+                            .map(|x| format!("{x} = ?"))
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    ),
+                    params_from_iter(values),
+                )?;
             }
             Command::AddTransaction(Transaction {
                 id,
@@ -343,13 +397,21 @@ impl SqlRepository {
                         Some(new_amount),
                     ),
                 };
-                query!("INSERT INTO transactions(id, notes, amount, type, acc_1, acc_2, external_party, new_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                                 id, notes, amount, typ,  acc_1, acc_2, external_party, new_amount
-                ).execute(&mut *transaction).await?;
+                TransactionDb {
+                    id,
+                    amount,
+                    typ,
+                    new_amount,
+                    external_party,
+                    acc_1,
+                    acc_2,
+                    notes,
+                }
+                .insert(&transaction)?;
             }
         }
 
-        transaction.commit().await?;
+        transaction.commit()?;
         Ok(())
     }
 }

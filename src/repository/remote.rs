@@ -7,21 +7,12 @@ use std::{
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
     process,
-    sync::Arc,
 };
-use tokio::sync::Mutex;
 
 use tracing::{debug, instrument};
 
 use crate::command::Command;
 use crate::types::*;
-use axum::{
-    extract::{self, Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Json},
-    routing::{get, post},
-    Router,
-};
 
 use super::Repository;
 
@@ -176,18 +167,18 @@ impl RemoteRepository {
 }
 
 #[instrument]
-async fn run_session(mut connection: Connection, repo: &OsStr) -> Result<()> {
-    let mut repo = Repository::open(repo).await?;
-    connection.send(repo.accounts().await?)?;
+fn run_session(mut connection: Connection, repo: &OsStr) -> Result<()> {
+    let mut repo = Repository::open(repo)?;
+    connection.send(repo.accounts()?)?;
     while let Some(msg) = connection.receive_or_eof::<Message>()? {
         debug!(?msg);
         match msg {
             Message::Command { command } => {
-                repo.run_command(command).await?;
-                connection.send(repo.accounts().await?)?;
+                repo.run_command(command)?;
+                connection.send(repo.accounts()?)?;
             }
             Message::Transactions { account } => {
-                connection.send(repo.transactions(account).await?)?;
+                connection.send(repo.transactions(account)?)?;
             }
         }
     }
@@ -195,11 +186,11 @@ async fn run_session(mut connection: Connection, repo: &OsStr) -> Result<()> {
 }
 
 #[instrument]
-async fn serve_listener(listener: TcpListener, repo: OsString) -> Result<()> {
+fn serve_listener(listener: TcpListener, repo: OsString) -> Result<()> {
     loop {
         let (stream, _) = listener.accept()?;
         let connection = Connection::new(BufReader::new(stream.try_clone()?), stream);
-        run_session(connection, &repo).await?;
+        run_session(connection, &repo)?;
     }
 }
 #[cfg(unix)]
@@ -216,7 +207,7 @@ mod systemd {
     }
 
     #[instrument]
-    pub async fn serve_systemd_listener(repo: OsString) -> Result<()> {
+    pub fn serve_systemd_listener(repo: OsString) -> Result<()> {
         ensure!(
             env::var("LISTEN_PID")?.parse::<u32>()? == process::id(),
             "This process should not be listening for systemd sockets"
@@ -236,88 +227,70 @@ mod systemd {
             listeners.is_empty(),
             "More than one listener is not supported at present"
         );
-        serve_listener(listener, repo).await
+        serve_listener(listener, repo)
     }
 }
 
 mod http {
+    use tiny_http::{Header, Method, Request, Response};
+    use tracing::info_span;
+
     use super::*;
-    #[derive(Debug)]
-    struct Error(eyre::Report);
-    impl IntoResponse for Error {
-        fn into_response(self) -> axum::response::Response {
-            tracing::error!(err = ?self.0, "Error!");
-            (StatusCode::INTERNAL_SERVER_ERROR, self.0.to_string()).into_response()
+
+    fn json(r: Request, s: impl Serialize) -> Result<()> {
+        let body = serde_json::to_string(&s)?;
+        r.respond(
+            Response::from_string(body)
+                .with_status_code(200)
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                ),
+        )?;
+        Ok(())
+    }
+    fn err(request: Request, code: u32, reason: &'static str) -> Result<()> {
+        request.respond(Response::from_string(reason).with_status_code(code))?;
+        Ok(())
+    }
+
+    #[instrument]
+    pub fn serve_http(addr: String, repo: OsString) -> Result<()> {
+        let mut repo = Repository::open(&repo)?;
+
+        let server = tiny_http::Server::http(addr).map_err(|e| eyre!(e))?;
+        for mut request in server.incoming_requests() {
+            let _span =
+                info_span!("request", url = request.url(), method = ?request.method()).entered();
+            match (
+                request.method(),
+                &request.url().split('/').skip(1).collect::<Vec<&str>>()[..],
+            ) {
+                (&Method::Get, &[]) => json(request, &repo.accounts()?)?,
+                (&Method::Post, &[]) => {
+                    let Some("application/json") = request.headers().iter().rev().find(|x| x.field.equiv("Content-Type")).map(|x| x.value.as_str()) else { err(request, 401, "JSON is required")?; continue };
+                    let Ok(command) = serde_json::from_reader(request.as_reader()) else { err(request, 401, "Invalid command")?; continue };
+                    repo.run_command(command)?;
+                    json(request, repo.accounts()?)?
+                }
+                (&Method::Get, &["transactions", account]) => {
+                    let Ok(account) = account.parse() else { err(request, 401, "Invalid account ID")?; continue };
+                    json(request, &repo.transactions(account)?)?
+                }
+                (&Method::Post, &["__stop__"]) => break,
+                _ => err(request, 404, "")?,
+            };
         }
-    }
-
-    impl<T> From<T> for Error
-    where
-        eyre::Report: From<T>,
-    {
-        fn from(value: T) -> Self {
-            Self(eyre::Report::from(value))
-        }
-    }
-
-    #[instrument]
-    async fn account_list(
-        State(repo): State<Arc<Mutex<Repository>>>,
-    ) -> Result<Json<Vec<Account>>, Error> {
-        Ok(Json(repo.lock().await.accounts().await?))
-    }
-    #[instrument]
-    async fn run_command(
-        State(repo): State<Arc<Mutex<Repository>>>,
-        extract::Json(command): extract::Json<Command>,
-    ) -> Result<Json<Vec<Account>>, Error> {
-        let mut repo = repo.lock().await;
-        repo.run_command(command).await?;
-        Ok(Json(repo.accounts().await?))
-    }
-
-    #[instrument]
-    async fn transaction_list(
-        repo: State<Arc<Mutex<Repository>>>,
-        Path(account): Path<Id<Account>>,
-    ) -> Result<Json<Vec<Transaction>>, Error> {
-        Ok(Json(repo.lock().await.transactions(account).await?))
-    }
-
-    #[instrument]
-    pub async fn serve_http(addr: String, repo: OsString) -> Result<()> {
-        let repo = Arc::new(Mutex::new(Repository::open(&repo).await?));
-
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let stop_tx = Arc::new(Mutex::new(Some(stop_tx)));
-        let stop = move || async move {
-            stop_tx.lock().await.take().unwrap().send(()).unwrap();
-            ""
-        };
-        let app = Router::new()
-            .route("/", get(account_list).post(run_command))
-            .route("/transactions/:account", get(transaction_list))
-            .route("/__stop__", post(stop))
-            .with_state(repo)
-            .layer(tower_http::trace::TraceLayer::new_for_http());
-
-        axum::Server::bind(&addr.parse().unwrap())
-            .serve(app.into_make_service())
-            .with_graceful_shutdown(async {
-                stop_rx.await.ok();
-            })
-            .await?;
         Ok(())
     }
 }
 
 #[instrument]
-pub async fn serve(mode: crate::ServeMode, repo: OsString) -> Result<()> {
+pub fn serve(mode: crate::ServeMode, repo: OsString) -> Result<()> {
     match mode {
-        crate::ServeMode::Stdio => run_session(Connection::new(stdin(), stdout()), &repo).await,
-        crate::ServeMode::Bind { addr } => serve_listener(TcpListener::bind(addr)?, repo).await,
-        crate::ServeMode::Http { addr } => http::serve_http(addr, repo).await,
+        crate::ServeMode::Stdio => run_session(Connection::new(stdin(), stdout()), &repo),
+        crate::ServeMode::Bind { addr } => serve_listener(TcpListener::bind(addr)?, repo),
+        crate::ServeMode::Http { addr } => http::serve_http(addr, repo),
         #[cfg(unix)]
-        crate::ServeMode::Systemd => systemd::serve_systemd_listener(repo).await,
+        crate::ServeMode::Systemd => systemd::serve_systemd_listener(repo),
     }
 }

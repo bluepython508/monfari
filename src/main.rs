@@ -48,8 +48,7 @@ pub enum ServeMode {
     Systemd,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     color_eyre::install()?;
     tracing::subscriber::set_global_default(
         registry()
@@ -70,7 +69,7 @@ async fn main() -> Result<()> {
             Repository::init(path)?;
         }
         None => {
-            repl::repl(Repository::open(&repo).await?).await?;
+            repl::repl(Repository::open(&repo)?)?;
         }
         Some(Command::Run { mut args }) => {
             for arg in &mut args {
@@ -78,19 +77,18 @@ async fn main() -> Result<()> {
                     *arg = format!("\"{}\"", arg);
                 }
             }
-            repl::command(Repository::open(&repo).await?, args.join(" ")).await?;
+            repl::command(Repository::open(&repo)?, args.join(" "))?;
         }
         Some(Command::Serve { mode }) => {
-            repository::serve(mode, repo).await?;
+            repository::serve(mode, repo)?;
         }
         Some(Command::Export) => {
-            let repo = Repository::open(&repo).await?;
-            let accounts = repo.accounts().await?;
+            let repo = Repository::open(&repo)?;
+            let accounts = repo.accounts()?;
             let mut transactions = BTreeMap::default();
             for account in &accounts {
                 transactions.extend(
-                    repo.transactions(account.id)
-                        .await?
+                    repo.transactions(account.id)?
                         .into_iter()
                         .map(|x| (x.id, command::Command::AddTransaction(x))),
                 );
@@ -110,9 +108,9 @@ async fn main() -> Result<()> {
             )
         }
         Some(Command::Import) => {
-            let mut repo = Repository::open(&repo).await?;
+            let mut repo = Repository::open(&repo)?;
             for command in serde_json::from_reader::<_, Vec<command::Command>>(io::stdin())? {
-                repo.run_command(command).await?;
+                repo.run_command(command)?;
             }
         }
     }

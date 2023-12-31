@@ -270,7 +270,7 @@ pub struct Physical;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Virtual;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum AccountType {
     Physical,
     Virtual,
