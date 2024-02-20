@@ -265,8 +265,8 @@ mod http {
                 request.method(),
                 &request.url().split('/').skip(1).collect::<Vec<&str>>()[..],
             ) {
-                (&Method::Get, &[]) => json(request, &repo.accounts()?)?,
-                (&Method::Post, &[]) => {
+                (&Method::Get, &[""]) => json(request, &repo.accounts()?)?,
+                (&Method::Post, &[""]) => {
                     let Some("application/json") = request.headers().iter().rev().find(|x| x.field.equiv("Content-Type")).map(|x| x.value.as_str()) else { err(request, 401, "JSON is required")?; continue };
                     let Ok(command) = serde_json::from_reader(request.as_reader()) else { err(request, 401, "Invalid command")?; continue };
                     repo.run_command(command)?;
@@ -277,7 +277,7 @@ mod http {
                     json(request, &repo.transactions(account)?)?
                 }
                 (&Method::Post, &["__stop__"]) => break,
-                _ => err(request, 404, "")?,
+                _ => err(request, 404, "Not Found")?,
             };
         }
         Ok(())
